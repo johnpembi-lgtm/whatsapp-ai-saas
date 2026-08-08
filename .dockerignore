@@ -1,0 +1,8 @@
+venv/
+.env
+conversations.db*
+*.pyc
+__pycache__/
+.git/
+test_flow.py
+test_models.py

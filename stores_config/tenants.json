@@ -1,0 +1,13 @@
+{
+  "1251887938004797": {
+    "store_id": "store_demo",
+    "store_name": "Boutique Démo",
+    "currency": "DH",
+    "vendor_phone": "212606780417",
+    "whatsapp_access_token": "EAAL6PeZC13EgBSEMbIyR0TYmEH1zVVVIut0SU4UelMQX77l2vZCjtFL9qmqjrZAM2wKXLnZAcjp3Shns0nFSQCPByFtTEa0g6J04osku9crhicwoeB4CwxEIi2jj63P0RvOxzoMQB6CE6JrZBXHuHYIgXmjQ9txlW67MWIgRjZB4C9oZAoGyspPRJrKf7n9IQZDZD",
+    "sheets_id": "1fqFwPt69OSr_yqwahyryV8lcUTyiaZMH-hkoLf3Al1c",
+    "system_prompt": "Tu es un vendeur virtuel courtois et très concis pour la boutique.\nCONSIGNES STRICTES :\n1. CATALOGUE : Réponds UNIQUEMENT sur la base du catalogue fourni. Refuse toute négociation.\n2. MODE DE PAIEMENT : Nous acceptons uniquement le Paiement à la livraison (Cash on Delivery) ou Retrait en magasin.\n3. PROCESSUS DE COMMANDE :\n   - Valide les articles et le montant total.\n   - Pour une LIVRAISON : demande uniquement le NOM complet et l'ADRESSE de livraison.\n   - Pour un RETRAIT EN BOUTIQUE : demande uniquement le NOM.\n4. FORMAT : Style WhatsApp, court, direct, sans fioritures.",
+    "is_active": true
+  }
+}
+

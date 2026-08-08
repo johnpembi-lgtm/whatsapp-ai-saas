@@ -1,0 +1,20 @@
+# Environnement virtuel
+venv/
+.venv/
+
+# Clés d'API et secrets
+.env
+
+# Base de données SQLite locale
+*.db
+*.sqlite3
+
+# Cache Python
+__pycache__/
+*.pyc
+# Fichiers de configuration et secrets Google
+credentials.json
+
+# Fichiers temporaires SQLite
+*.db-shm
+*.db-wal
