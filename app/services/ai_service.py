@@ -1,6 +1,7 @@
 import json
 import os
 from groq import Groq
+import httpx
 
 
 class AIService:
@@ -17,7 +18,14 @@ class AIService:
             print("❌ Erreur AIService : GROQ_API_KEY manquant dans .env")
             return "Désolé, le service IA est indisponible pour le moment."
 
-        client = Groq(api_key=api_key)
+        try:
+            # Solution au bug 'proxies' : On initialise explicitement un client HTTPX standard
+            # et on force une limite de temps (timeout) pour éviter les blocages Gunicorn.
+            http_client = httpx.Client(timeout=15.0)
+            client = Groq(api_key=api_key, http_client=http_client)
+        except Exception as e:
+            print(f"❌ Erreur lors de l'initialisation du client Groq : {e}")
+            return "Désolé, le service IA rencontre un problème de configuration."
 
         # 1. Mise en forme propre et claire du catalogue
         catalog_text = ""
