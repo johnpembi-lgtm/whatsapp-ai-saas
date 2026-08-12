@@ -5,7 +5,7 @@ from flask import current_app
 from groq import Groq
 from app.services.sheets_service import SheetsService
 from app.services.whatsapp_service import WhatsAppService
-from app.services.cart_service import CartService  # <-- AJOUT : Import du service de panier
+from app.services.cart_service import CartService
 
 
 class OrdersService:
@@ -41,7 +41,7 @@ class OrdersService:
         2. "address" : Cherche l'adresse textuelle ou la géolocalisation/GPS transmise par le client.
         3. "items" : Liste explicite des produits commandés avec leurs quantités (ex: "4x T-Shirt Coton Noir, 3x Jean Slim Bleu").
         4. "total_price" : Montant total numérique uniquement (ex: "1500").
-        5. "is_order_completed" : Mets true SEULEMENT SI le nom ET l'adresse/géolocalisation sont présents dans l'échange et que la commande est explicitement validée.
+        5. "is_order_completed" : Mets true SEULEMENT SI le nom ET l'adresse/géolocalisation sont présents dans l'échange et que la commande est explicitement validée DANS LE DERNIER ÉCHANGE COURANT. Si la commande a DEJÀ été confirmée et traitée auparavant dans l'historique, mets false.
 
         Tu dois répondre STRICTEMENT par un objet JSON respectant cette structure :
         {{
@@ -81,6 +81,10 @@ class OrdersService:
         ai_reply,
     ):
         """Vérifie la commande, l'enregistre dans Google Sheets et notifie le vendeur via WhatsApp."""
+        # Garde-fou immédiat : Si la commande est déjà validée dans le système, on abandonne
+        if CartService.is_order_completed(phone_number_id, sender_phone):
+            return
+
         order_info = OrdersService.extract_order_data(
             history, user_text, ai_reply
         )

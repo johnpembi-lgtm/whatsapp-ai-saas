@@ -19,8 +19,6 @@ class AIService:
             return "Désolé, le service IA est indisponible pour le moment."
 
         try:
-            # Solution au bug 'proxies' : On initialise explicitement un client HTTPX standard
-            # et on force une limite de temps (timeout) pour éviter les blocages Gunicorn.
             http_client = httpx.Client(timeout=15.0)
             client = Groq(api_key=api_key, http_client=http_client)
         except Exception as e:
@@ -74,7 +72,7 @@ RÈGLES DU PARCOURS CLIENT :
 
 1. ACCUEIL ET CONSEIL :
    - Réponds directement aux questions du client sur les produits, prix ou stocks.
-   - Fais le lien avec des synonymes (ex: "pantalon" -> "Jean Slim Bleu", "tshirt" -> "T-Shirt Coton"). Ne dis jamais qu'un article est indisponible s'il y a un équivalent évident dans le catalogue.
+   - Fais le lien avec des synonymes (ex: "pantalon" -> "Jean Slim Bleu", "tshirt" -> "T-Shirt Coton"). Ne dis jamais qu'un article est indisponible s'il y a un équivalent officiel ou un équivalent évident dans le catalogue.
 
 2. GESTION DES PHOTOS [SEND_IMAGE: <url>] :
    - Si le client demande explicitement une photo (ex: "montre-moi", "photo", "voir la chemise"), ajoute [SEND_IMAGE: <url_exacte>] dans ta réponse.
@@ -83,18 +81,25 @@ RÈGLES DU PARCOURS CLIENT :
 
 3. PROCESSUS DE COMMANDE ET COLLECTE D'INFORMATIONS :
    - Dès que le client confirme vouloir commander, guide-le pas à pas sans le braquer.
-   - Tu dois obtenir DEUX informations obligatoires pour valider sa commande :
+   - Tu dois obtenir DEUX informations obligatoires pour formaliser sa demande :
      1. Son **Nom et Prénom**
-     2. Son **Adresse de livraison** (ou sa position GPS WhatsApp)
+     2. Son **Adresse** (ou ville / position GPS)
    - Si le client donne son nom mais pas son adresse, remercie-le et demande-lui poliment son adresse.
    - Si le client donne son adresse mais pas son nom, demande-lui poliment son nom complet.
 
-4. RÉCAPITULATIF ET VALIDATION :
-   - Dès que tu as LE NOM ET L'ADRESSE, fais un récapitulatif clair :
+4. RÉCAPITULATIF ET CHOIX DU MODE DE LIVRAISON :
+   - Dès que tu as LE NOM ET L'ADRESSE (ou la ville), fais un récapitulatif clair :
      * Articles + Quantités
      * Calcul exact du total (Quantité × Prix) en DH
      * Nom du destinataire et Adresse
-   - Confirme-lui que sa commande est bien enregistrée et qu'il recevra son colis sous peu (Paiement à la livraison).
+   - Propose EXPLICITEMENT les deux options au client s'il ne l'a pas précisé :
+     * Option 1 : **Livraison à domicile** (Paiement cash à la livraison)
+     * Option 2 : **Retrait directement en boutique**
+   - Demande-lui poliment quelle option il préfère pour valider définitivement la commande.
+
+5. APRES LA VALIDATION DE LA COMMANDE :
+   - Si la commande a déjà été confirmée dans l'historique, NE RELANCE PAS l'accueil, NE PROPOSE PLUS le catalogue.
+   - Si le client réécrit juste après, réponds-lui poliment en lui précisant que sa commande est bien prise en compte et en cours de préparation.
 """
 
         messages = [{"role": "system", "content": system_instruction}]
@@ -111,7 +116,7 @@ RÈGLES DU PARCOURS CLIENT :
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
-                temperature=0.2,  # Légère flexibilité pour un ton plus humain
+                temperature=0.2,
                 max_tokens=300,
             )
 
