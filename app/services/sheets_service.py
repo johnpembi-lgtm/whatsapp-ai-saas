@@ -20,7 +20,7 @@ class SheetsService:
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-        
+
         base_dir = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
@@ -51,7 +51,7 @@ class SheetsService:
                 return gspread.authorize(creds)
             except Exception as e:
                 print(f"❌ Erreur lors de l'autorisation gspread : {e}")
-        
+
         print("❌ Aucune méthode d'authentification Google valide trouvée.")
         return None
 
@@ -87,7 +87,7 @@ class SheetsService:
                         norm_rec.get("stock", 0),
                         norm_rec.get("image_url", "")
                     ])
-                
+
                 catalog_sheet.clear()
                 catalog_sheet.append_row(SheetsService.HEADERS)
                 if aligned_rows:
@@ -173,16 +173,13 @@ class SheetsService:
 
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
-        """Crée un nouveau Google Sheet pour une boutique directement dans le dossier Drive partagé
-        pour contourner la limite de quota du compte de service.
-        """
+        """Crée un nouveau Google Sheet pour une boutique directement dans le dossier Drive partagé."""
         try:
             creds = SheetsService._get_google_credentials()
             if not creds:
                 print("❌ Credentials introuvables.")
                 return None
 
-            # S'assurer que le token OAuth2 est valide
             if not creds.valid:
                 creds.refresh(Request())
 
@@ -195,15 +192,16 @@ class SheetsService:
                     "Authorization": f"Bearer {creds.token}",
                     "Content-Type": "application/json",
                 }
-                url = "https://www.googleapis.com/drive/v3/files"
+                # Utilisation des paramètres supportsAllDrives pour contourner la contrainte de quota
+                url = "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true"
                 file_metadata = {
                     "name": title,
                     "mimeType": "application/vnd.google-apps.spreadsheet",
                     "parents": [folder_id],
                 }
-                
+
                 res = requests.post(url, headers=headers, json=file_metadata)
-                
+
                 if res.status_code != 200:
                     print(f"❌ Erreur API Drive ({res.status_code}) : {res.text}")
                     return None
