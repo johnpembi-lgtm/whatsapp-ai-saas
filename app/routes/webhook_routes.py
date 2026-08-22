@@ -1,5 +1,6 @@
 import threading
 import logging
+import os
 from collections import deque
 from flask import Blueprint, request, jsonify, current_app
 
@@ -47,10 +48,14 @@ def verify_webhook():
 def handle_webhook():
     """Réception des webhooks WhatsApp en temps réel."""
     
-    # 1. Sécurité : Vérification de la signature Meta
-    secret_key = current_app.config.get("SECRET_KEY")
-    if secret_key and not verify_meta_signature(secret_key):
-        return jsonify({"status": "error", "message": "Signature invalide ou non autorisée"}), 403
+    # 1. Sécurité : Récupération de l'App Secret Meta (et non la SECRET_KEY Flask)
+    app_secret = current_app.config.get("APP_SECRET") or os.getenv("APP_SECRET") or os.getenv("META_APP_SECRET")
+    
+    if app_secret:
+        if not verify_meta_signature(app_secret):
+            return jsonify({"status": "error", "message": "Signature invalide ou non autorisée"}), 403
+    else:
+        logger.warning("⚠️ APP_SECRET non configuré : validation de signature ignorée.")
 
     data = request.get_json()
     if not data:
