@@ -179,14 +179,14 @@ class SheetsService:
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
             if folder_id:
-                # Appel direct de l'API Drive v3 avec la session d'authentification de gspread
+                # Session HTTP gspread authentifiée pour l'API Google Drive v3
                 url = "https://www.googleapis.com/drive/v3/files"
                 file_metadata = {
                     "name": title,
                     "mimeType": "application/vnd.google-apps.spreadsheet",
                     "parents": [folder_id],
                 }
-                res = client.auth.post(url, json=file_metadata)
+                res = client.session.post(url, json=file_metadata)
                 
                 if res.status_code != 200:
                     print(f"❌ Erreur API Drive ({res.status_code}) : {res.text}")
