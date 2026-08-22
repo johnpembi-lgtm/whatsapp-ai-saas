@@ -179,14 +179,20 @@ class SheetsService:
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
             if folder_id:
-                # Session HTTP gspread authentifiée pour l'API Google Drive v3
+                # Utilisation directe du token d'accès OAuth2 de gspread avec requests
+                access_token = client.auth.token
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                }
                 url = "https://www.googleapis.com/drive/v3/files"
                 file_metadata = {
                     "name": title,
                     "mimeType": "application/vnd.google-apps.spreadsheet",
                     "parents": [folder_id],
                 }
-                res = client.session.post(url, json=file_metadata)
+                
+                res = requests.post(url, headers=headers, json=file_metadata)
                 
                 if res.status_code != 200:
                     print(f"❌ Erreur API Drive ({res.status_code}) : {res.text}")
@@ -242,7 +248,7 @@ class SheetsService:
                     current_stock = int(row.get("stock", 0))
                     new_stock = max(0, current_stock - int(quantity_ordered))
 
-                    # La colonne Stock est strictement la colonne D (Index 4)
+                    # La colonne Stock est strictly la colonne D (Index 4)
                     sheet.update_cell(idx, 4, new_stock)
                     print(f"📉 Stock mis à jour pour '{product_name}' : {current_stock} -> {new_stock}")
                     return True
