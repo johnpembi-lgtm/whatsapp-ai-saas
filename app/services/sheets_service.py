@@ -179,22 +179,20 @@ class SheetsService:
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
             if folder_id:
-                # Création directe dans le dossier partagé via l'API Drive v3
-                drive_http = client.http_client
+                # Appel direct de l'API Drive v3 avec la session d'authentification de gspread
+                url = "https://www.googleapis.com/drive/v3/files"
                 file_metadata = {
-                    'name': title,
-                    'mimeType': 'application/vnd.google-apps.spreadsheet',
-                    'parents': [folder_id]
+                    "name": title,
+                    "mimeType": "application/vnd.google-apps.spreadsheet",
+                    "parents": [folder_id],
                 }
-                res = drive_http.post(
-                    'https://www.googleapis.com/drive/v3/files',
-                    json=file_metadata
-                )
+                res = client.auth.post(url, json=file_metadata)
+                
                 if res.status_code != 200:
                     print(f"❌ Erreur API Drive ({res.status_code}) : {res.text}")
                     return None
 
-                sheet_id = res.json().get('id')
+                sheet_id = res.json().get("id")
                 spreadsheet = client.open_by_key(sheet_id)
             else:
                 # Création standard en fallback
