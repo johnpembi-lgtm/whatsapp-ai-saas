@@ -4,6 +4,8 @@ import json
 import os
 import gspread
 import requests
+from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request
 
 
 class SheetsService:
@@ -12,35 +14,45 @@ class SheetsService:
     HEADERS = ["nom", "description", "prix", "stock", "image_url"]
 
     @staticmethod
-    def get_gspread_client():
-        """
-        Initialise le client gspread.
-        Essaie d'abord via le fichier physique local credentials.json,
-        sinon lit le JSON depuis la variable d'environnement GOOGLE_CREDENTIALS_JSON.
-        """
+    def _get_google_credentials():
+        """Récupère les objets Credentials Google OAuth2."""
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        
         base_dir = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
         creds_path = os.path.join(base_dir, "credentials.json")
 
-        # 1. Vérification si le fichier local existe (Environnement de Dev)
         if os.path.exists(creds_path):
             try:
-                return gspread.service_account(filename=creds_path)
+                return Credentials.from_service_account_file(creds_path, scopes=scopes)
             except Exception as e:
                 print(f"❌ Erreur lors du chargement de {creds_path} : {e}")
 
-        # 2. Sinon, lecture depuis la variable d'environnement (Environnement Render/Production)
         creds_env = os.getenv("GOOGLE_CREDENTIALS_JSON")
         if creds_env:
             try:
                 creds_dict = json.loads(creds_env)
-                return gspread.service_account_from_dict(creds_dict)
+                return Credentials.from_service_account_info(creds_dict, scopes=scopes)
             except Exception as e:
                 print(f"❌ Erreur lors du parsing de GOOGLE_CREDENTIALS_JSON : {e}")
-                return None
 
-        print("❌ Aucune méthode d'authentification Google valide trouvée (ni fichier local, ni variable GOOGLE_CREDENTIALS_JSON).")
+        return None
+
+    @staticmethod
+    def get_gspread_client():
+        """Initialise le client gspread avec les credentials."""
+        creds = SheetsService._get_google_credentials()
+        if creds:
+            try:
+                return gspread.authorize(creds)
+            except Exception as e:
+                print(f"❌ Erreur lors de l'autorisation gspread : {e}")
+        
+        print("❌ Aucune méthode d'authentification Google valide trouvée.")
         return None
 
     @staticmethod
@@ -54,7 +66,6 @@ class SheetsService:
             )
             catalog_sheet.append_row(SheetsService.HEADERS)
 
-        # Chercher la présence d'onglets legacy (Feuille 1 / Sheet1)
         legacy_sheet = None
         for sheet_name in ["Feuille 1", "Sheet1", "Feuille1"]:
             try:
@@ -63,14 +74,11 @@ class SheetsService:
             except gspread.exceptions.WorksheetNotFound:
                 continue
 
-        # Migration intelligente et réordonnée
         if legacy_sheet:
             records = legacy_sheet.get_all_records()
             if records:
-                # Reconstitution des lignes avec le bon ordre de colonnes
                 aligned_rows = []
                 for rec in records:
-                    # Normalisation des clés
                     norm_rec = {str(k).strip().lower(): v for k, v in rec.items()}
                     aligned_rows.append([
                         norm_rec.get("nom", ""),
@@ -80,7 +88,6 @@ class SheetsService:
                         norm_rec.get("image_url", "")
                     ])
                 
-                # Écriture dans le catalogue propre
                 catalog_sheet.clear()
                 catalog_sheet.append_row(SheetsService.HEADERS)
                 if aligned_rows:
@@ -170,19 +177,22 @@ class SheetsService:
         pour contourner la limite de quota du compte de service.
         """
         try:
-            client = SheetsService.get_gspread_client()
-            if not client:
-                print("❌ Impossible de créer le Sheet : client Google indisponible.")
+            creds = SheetsService._get_google_credentials()
+            if not creds:
+                print("❌ Credentials introuvables.")
                 return None
 
+            # S'assurer que le token OAuth2 est valide
+            if not creds.valid:
+                creds.refresh(Request())
+
+            client = gspread.authorize(creds)
             title = f"WhatsAuto IA - {store_name}"[:100]
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
             if folder_id:
-                # Utilisation directe du token d'accès OAuth2 de gspread avec requests
-                access_token = client.auth.token
                 headers = {
-                    "Authorization": f"Bearer {access_token}",
+                    "Authorization": f"Bearer {creds.token}",
                     "Content-Type": "application/json",
                 }
                 url = "https://www.googleapis.com/drive/v3/files"
@@ -201,7 +211,6 @@ class SheetsService:
                 sheet_id = res.json().get("id")
                 spreadsheet = client.open_by_key(sheet_id)
             else:
-                # Création standard en fallback
                 spreadsheet = client.create(title)
 
             # Onglet Catalogue
@@ -242,13 +251,12 @@ class SheetsService:
             sheet = SheetsService.consolidate_and_get_catalog_sheet(spreadsheet)
             records = sheet.get_all_records()
 
-            for idx, row in enumerate(records, start=2):  # Line 1 = headers
+            for idx, row in enumerate(records, start=2):
                 name_in_sheet = str(row.get("nom", "")).strip().lower()
                 if name_in_sheet == product_name.strip().lower():
                     current_stock = int(row.get("stock", 0))
                     new_stock = max(0, current_stock - int(quantity_ordered))
 
-                    # La colonne Stock est strictly la colonne D (Index 4)
                     sheet.update_cell(idx, 4, new_stock)
                     print(f"📉 Stock mis à jour pour '{product_name}' : {current_stock} -> {new_stock}")
                     return True
@@ -264,7 +272,7 @@ class SheetsService:
     def add_or_update_product(
         sheets_id, product_name, description, price, stock, image_url
     ):
-        """Ajoute ou met à jour un produit en réécrivant TOUTE la ligne de A à E pour éviter tout décalage."""
+        """Ajoute ou met à jour un produit en réécrivant toute la ligne de A à E."""
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -278,13 +286,11 @@ class SheetsService:
 
             for idx, row in enumerate(records, start=2):
                 if str(row.get("nom", "")).strip().lower() == product_name.strip().lower():
-                    # Met à jour d'un seul coup la plage A-E de la ligne
                     cell_range = f"A{idx}:E{idx}"
                     sheet.update(cell_range, [row_data])
                     print(f"✅ Produit '{product_name}' mis à jour proprement dans le catalogue Sheets !")
                     return True
 
-            # Si nouveau produit
             sheet.append_row(row_data)
             print(f"✅ Nouveau produit '{product_name}' ajouté au catalogue Sheets !")
             return True
