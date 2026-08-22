@@ -8,7 +8,13 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Copier et installer les dépendances
+# Installation des dépendances système nécessaires
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copier et installer les dépendances Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -18,6 +24,5 @@ COPY . .
 # Exposer le port de l'application
 EXPOSE 5000
 
-# Commande d'exécution via Gunicorn
-# --threads=2 permet au planificateur (APScheduler) de tourner sereinement en arrière-plan
+# Commande d'exécution via Gunicorn (1 worker + 2 threads pour APScheduler)
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "2", "wsgi:app"]

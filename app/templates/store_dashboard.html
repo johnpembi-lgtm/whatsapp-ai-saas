@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard — {{ tenant.get('store_name') or tenant.get('store_id') }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans p-6">
+    <div class="max-w-6xl mx-auto space-y-6">
+
+        <!-- Header -->
+        <div class="flex justify-between items-center bg-white p-6 rounded-lg shadow-sm">
+            <div>
+                <a href="{{ url_for('admin.dashboard') }}" class="text-xs text-blue-600 hover:underline">&larr; Retour à la liste des boutiques</a>
+                <h1 class="text-2xl font-bold text-gray-900 mt-1">{{ tenant.get('store_name') or tenant.get('store_id') }}</h1>
+                <p class="text-sm text-gray-500 font-mono">{{ phone_number_id }} — Vendeur : +{{ tenant.get('vendor_phone') }}</p>
+            </div>
+            {% if tenant.get('is_active') %}
+                <span class="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded">Boutique active</span>
+            {% else %}
+                <span class="bg-red-100 text-red-800 text-xs font-semibold px-3 py-1 rounded">Boutique inactive</span>
+            {% endif %}
+        </div>
+
+        <!-- Cartes statistiques -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="bg-white p-5 rounded-lg shadow-sm border border-gray-200">
+                <p class="text-xs text-gray-500 uppercase font-semibold">Commandes aujourd'hui</p>
+                <p class="text-2xl font-bold text-gray-900 mt-1">{{ today_stats.count_today }}</p>
+            </div>
+            <div class="bg-white p-5 rounded-lg shadow-sm border border-gray-200">
+                <p class="text-xs text-gray-500 uppercase font-semibold">CA aujourd'hui</p>
+                <p class="text-2xl font-bold text-gray-900 mt-1">{{ "%.0f"|format(today_stats.revenue_today) }} DH</p>
+            </div>
+            <div class="bg-white p-5 rounded-lg shadow-sm border border-gray-200">
+                <p class="text-xs text-gray-500 uppercase font-semibold">Total commandes</p>
+                <p class="text-2xl font-bold text-gray-900 mt-1">{{ today_stats.count_total }}</p>
+            </div>
+            <div class="bg-white p-5 rounded-lg shadow-sm border border-gray-200">
+                <p class="text-xs text-gray-500 uppercase font-semibold">CA total</p>
+                <p class="text-2xl font-bold text-gray-900 mt-1">{{ "%.0f"|format(today_stats.revenue_total) }} DH</p>
+            </div>
+        </div>
+
+        <!-- Funnel de relance -->
+        <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Funnel des paniers (Retargeting)</h2>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-center">
+                <div class="p-3 rounded bg-gray-50">
+                    <p class="text-xl font-bold text-gray-700">{{ cart_funnel.pending }}</p>
+                    <p class="text-xs text-gray-500 mt-1">En attente</p>
+                </div>
+                <div class="p-3 rounded bg-yellow-50">
+                    <p class="text-xl font-bold text-yellow-700">{{ cart_funnel.reminder_1_sent }}</p>
+                    <p class="text-xs text-gray-500 mt-1">Relance 1</p>
+                </div>
+                <div class="p-3 rounded bg-orange-50">
+                    <p class="text-xl font-bold text-orange-700">{{ cart_funnel.reminder_2_sent }}</p>
+                    <p class="text-xs text-gray-500 mt-1">Relance 2</p>
+                </div>
+                <div class="p-3 rounded bg-red-50">
+                    <p class="text-xl font-bold text-red-700">{{ cart_funnel.expired }}</p>
+                    <p class="text-xs text-gray-500 mt-1">Expirés</p>
+                </div>
+                <div class="p-3 rounded bg-green-50">
+                    <p class="text-xl font-bold text-green-700">{{ cart_funnel.completed }}</p>
+                    <p class="text-xs text-gray-500 mt-1">Convertis</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            <!-- Conversations récentes -->
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">Conversations récentes</h2>
+                <div class="space-y-2 max-h-96 overflow-y-auto">
+                    {% for c in conversations %}
+                    <div class="p-3 rounded border border-gray-100 hover:bg-gray-50">
+                        <div class="flex justify-between items-center">
+                            <span class="font-mono text-sm text-gray-700">+{{ c.customer_phone }}</span>
+                            {% if c.mode == 'human' %}
+                                <span class="bg-purple-100 text-purple-800 text-xs font-semibold px-2 py-0.5 rounded">🙋 Mode humain</span>
+                            {% else %}
+                                <span class="bg-blue-100 text-blue-800 text-xs font-semibold px-2 py-0.5 rounded">🤖 Mode bot</span>
+                            {% endif %}
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1 truncate">
+                            {% if c.last_role == 'user' %}<span class="font-semibold">Client :</span>{% else %}<span class="font-semibold">Réponse :</span>{% endif %}
+                            {{ c.last_message }}
+                        </p>
+                        <a href="https://wa.me/{{ c.customer_phone }}" target="_blank" class="text-xs text-green-600 hover:underline">Ouvrir sur WhatsApp &rarr;</a>
+                    </div>
+                    {% else %}
+                    <p class="text-center text-gray-400 text-sm py-4">Aucune conversation pour le moment.</p>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Commandes récentes -->
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">Commandes récentes</h2>
+                <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="sticky top-0 bg-white">
+                            <tr class="border-b">
+                                <th class="p-2 font-semibold text-gray-600">Client</th>
+                                <th class="p-2 font-semibold text-gray-600">Articles</th>
+                                <th class="p-2 font-semibold text-gray-600">Total</th>
+                                <th class="p-2 font-semibold text-gray-600">Statut</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y">
+                            {% for o in recent_orders %}
+                            <tr class="hover:bg-gray-50">
+                                <td class="p-2">{{ o.get('Nom Client', '?') }}</td>
+                                <td class="p-2 truncate max-w-[150px]">{{ o.get('Articles Commandés', '?') }}</td>
+                                <td class="p-2">{{ o.get('Total (DH)', '?') }}</td>
+                                <td class="p-2">{{ o.get('Statut', '?') }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="4" class="p-4 text-center text-gray-400">Aucune commande pour le moment.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Catalogue / Stock -->
+        <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Catalogue & Stock</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead>
+                        <tr class="border-b bg-gray-50">
+                            <th class="p-3 font-semibold text-gray-600">Produit</th>
+                            <th class="p-3 font-semibold text-gray-600">Prix</th>
+                            <th class="p-3 font-semibold text-gray-600">Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y">
+                        {% for p in catalog %}
+                        <tr class="hover:bg-gray-50">
+                            <td class="p-3 font-medium">{{ p.get('nom', '?') }}</td>
+                            <td class="p-3">{{ p.get('prix', '?') }} DH</td>
+                            <td class="p-3">
+                                {% if p.get('stock', '0')|int == 0 %}
+                                    <span class="text-red-600 font-semibold">Rupture</span>
+                                {% else %}
+                                    {{ p.get('stock', '?') }}
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3" class="p-4 text-center text-gray-400">Catalogue vide.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

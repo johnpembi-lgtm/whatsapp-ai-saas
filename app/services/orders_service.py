@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 from flask import current_app
 from groq import Groq
 from app.services.sheets_service import SheetsService
@@ -10,6 +11,44 @@ from app.services.cart_service import CartService
 
 class OrdersService:
     """Service d'analyse et d'enregistrement des commandes clients via Groq."""
+
+    @staticmethod
+    def get_recent_orders(tenant, limit=20):
+        """Lit les commandes les plus récentes depuis l'onglet 'Commandes' du
+        Google Sheets de la boutique. Retourne une liste vide (sans planter)
+        si l'onglet n'existe pas encore (aucune commande passée)."""
+        sheets_id = tenant.get("sheets_id")
+        try:
+            client = SheetsService.get_gspread_client()
+            if not client:
+                return []
+            spreadsheet = client.open_by_key(sheets_id)
+            sheet = spreadsheet.worksheet("Commandes")
+            records = sheet.get_all_records()
+            return list(reversed(records))[:limit]
+        except Exception as e:
+            print(f"⚠️ Aucune commande disponible pour l'affichage dashboard : {e}")
+            return []
+
+    @staticmethod
+    def get_today_stats(tenant):
+        """Calcule le nombre de commandes et le chiffre d'affaires du jour."""
+        orders = OrdersService.get_recent_orders(tenant, limit=500)
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        today_orders = [o for o in orders if str(o.get("Date", "")).startswith(today_str)]
+
+        def parse_total(row):
+            try:
+                return float(re.sub(r"[^\d.]", "", str(row.get("Total (DH)", "0"))))
+            except ValueError:
+                return 0.0
+
+        return {
+            "count_today": len(today_orders),
+            "revenue_today": sum(parse_total(o) for o in today_orders),
+            "count_total": len(orders),
+            "revenue_total": sum(parse_total(o) for o in orders),
+        }
 
     @staticmethod
     def extract_order_data(history, last_user_msg, last_ai_reply):

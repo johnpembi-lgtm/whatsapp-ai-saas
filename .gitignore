@@ -1,20 +1,26 @@
 # Environnement virtuel
 venv/
 .venv/
+env/
+ENV/
 
 # Clés d'API et secrets
 .env
+credentials.json
+*.pem
 
-# Base de données SQLite locale
+# Base de données SQLite locale et temporaires
 *.db
 *.sqlite3
-
-# Cache Python
-__pycache__/
-*.pyc
-# Fichiers de configuration et secrets Google
-credentials.json
-
-# Fichiers temporaires SQLite
 *.db-shm
 *.db-wal
+
+# Cache Python et fichiers compilés
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store

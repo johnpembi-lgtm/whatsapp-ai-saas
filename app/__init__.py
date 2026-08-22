@@ -1,3 +1,4 @@
+import os
 from flask import Flask
 from flask_apscheduler import APScheduler
 from config import Config
@@ -8,17 +9,29 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # Clé secrète obligatoire pour les messages flash
     if not app.config.get("SECRET_KEY"):
         app.config["SECRET_KEY"] = "une_cle_secrete_ultra_securisee_2026"
 
     app.json.ensure_ascii = False
 
-    # Planificateur
+    # Configuration et démarrage du Scheduler
     app.config["SCHEDULER_API_ENABLED"] = True
     scheduler.init_app(app)
-    if not scheduler.running:
-        scheduler.start()
+
+    # Évite le double démarrage en mode Reload de Flask
+    if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        from app.services.retargeting_service import RetargetingService
+
+        if not scheduler.get_job("retargeting_job"):
+            scheduler.add_job(
+                id="retargeting_job",
+                func=RetargetingService.process_abandoned_carts,
+                trigger="interval",
+                minutes=15
+            )
+        
+        if not scheduler.running:
+            scheduler.start()
 
     # Blueprints
     from app.routes.admin_routes import admin_bp

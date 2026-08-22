@@ -35,7 +35,10 @@ class CartService:
                 "phone_number_id": str(phone_number_id),
                 "customer_phone": str(customer_phone),
                 "last_interaction": now,
-                "status": "pending"
+                "status": "pending",
+                # Le client vient d'interagir : on annule tout cycle de relance
+                # en cours et on repart de zéro (règle anti-spam).
+                "reminder_count": 0,
             }
             if last_product:
                 payload["last_product"] = last_product

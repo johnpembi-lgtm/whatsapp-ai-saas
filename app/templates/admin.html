@@ -49,8 +49,15 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">ID Google Sheets</label>
-                    <input type="text" name="sheets_id" placeholder="ex: 1BxiMVs0XRA5nFMdKbB..." required class="w-full border rounded p-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Email du vendeur (optionnel)</label>
+                    <input type="email" name="vendor_email" placeholder="ex: vendeur@gmail.com" class="w-full border rounded p-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <p class="text-xs text-gray-400 mt-1">Pour partager automatiquement le Google Sheet avec le vendeur.</p>
+                </div>
+
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">ID Google Sheets (optionnel)</label>
+                    <input type="text" name="sheets_id" placeholder="Laissez vide pour créer automatiquement un nouveau Sheet" class="w-full border rounded p-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <p class="text-xs text-gray-400 mt-1">Si vide, un Google Sheet (Catalogue + Commandes) sera créé automatiquement.</p>
                 </div>
 
                 <div class="md:col-span-2">
@@ -82,6 +89,7 @@
                             <th class="p-3 font-semibold text-gray-600">Phone ID</th>
                             <th class="p-3 font-semibold text-gray-600">Vendeur</th>
                             <th class="p-3 font-semibold text-gray-600">Google Sheets ID</th>
+                            <th class="p-3 font-semibold text-gray-600">Action</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
@@ -98,10 +106,13 @@
                             <td class="p-3 text-gray-500 font-mono">{{ tenant.get('phone_number_id') }}</td>
                             <td class="p-3 text-gray-700">+{{ tenant.get('vendor_phone') }}</td>
                             <td class="p-3 text-gray-500 font-mono truncate max-w-xs">{{ tenant.get('sheets_id') }}</td>
+                            <td class="p-3">
+                                <a href="{{ url_for('admin.store_dashboard', phone_number_id=phone_id) }}" class="text-blue-600 hover:underline text-xs font-semibold">Voir dashboard &rarr;</a>
+                            </td>
                         </tr>
                         {% else %}
                         <tr>
-                            <td colspan="5" class="p-4 text-center text-gray-400">Aucune boutique enregistrée dans le fichier de configuration.</td>
+                            <td colspan="6" class="p-4 text-center text-gray-400">Aucune boutique enregistrée dans le fichier de configuration.</td>
                         </tr>
                         {% endfor %}
                     </tbody>

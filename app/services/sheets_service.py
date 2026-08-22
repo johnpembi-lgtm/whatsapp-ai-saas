@@ -165,6 +165,54 @@ class SheetsService:
             return False
 
     @staticmethod
+    def create_store_sheet(store_name, vendor_email=None):
+        """Crée un nouveau Google Sheet pour une boutique, avec les onglets
+        Catalogue et Commandes déjà structurés (Phase 5 — Onboarding).
+
+        Si vendor_email est fourni, partage le Sheet en écriture avec ce
+        compte Google, pour que le vendeur puisse le consulter/éditer
+        directement depuis l'app Google Sheets sur son téléphone.
+
+        Retourne le sheets_id créé, ou None en cas d'échec.
+        """
+        try:
+            client = SheetsService.get_gspread_client()
+            if not client:
+                print("❌ Impossible de créer le Sheet : client Google indisponible.")
+                return None
+
+            title = f"WhatsAuto IA - {store_name}"[:100]  # Google limite la longueur du titre
+            spreadsheet = client.create(title)
+
+            # Onglet Catalogue (renomme l'onglet par défaut "Feuille 1")
+            default_sheet = spreadsheet.sheet1
+            default_sheet.update_title("Catalogue")
+            default_sheet.append_row(SheetsService.HEADERS)
+
+            # Onglet Commandes
+            commandes_sheet = spreadsheet.add_worksheet(title="Commandes", rows=200, cols=7)
+            commandes_sheet.append_row([
+                "Date", "Téléphone Client", "Nom Client",
+                "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
+            ])
+
+            if vendor_email:
+                try:
+                    spreadsheet.share(vendor_email, perm_type="user", role="writer")
+                except Exception as e:
+                    # Ne bloque pas la création si le partage échoue (ex: email invalide) —
+                    # le Sheet reste accessible via le compte de service, à partager
+                    # manuellement plus tard si besoin.
+                    print(f"⚠️ Sheet créé mais partage avec {vendor_email} échoué : {e}")
+
+            print(f"✅ Nouveau Google Sheet créé pour '{store_name}' : {spreadsheet.id}")
+            return spreadsheet.id
+
+        except Exception as e:
+            print(f"❌ Erreur lors de la création du Sheet pour '{store_name}' : {repr(e)}")
+            return None
+
+    @staticmethod
     def update_stock(sheets_id, product_name, quantity_ordered):
         """Déduit automatiquement la quantité commandée du stock d'un produit."""
         try:
