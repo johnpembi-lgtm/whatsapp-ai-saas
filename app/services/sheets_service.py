@@ -166,14 +166,8 @@ class SheetsService:
 
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
-        """Crée un nouveau Google Sheet pour une boutique, avec les onglets
-        Catalogue et Commandes déjà structurés (Phase 5 — Onboarding).
-
-        Si vendor_email est fourni, partage le Sheet en écriture avec ce
-        compte Google, pour que le vendeur puisse le consulter/éditer
-        directement depuis l'app Google Sheets sur son téléphone.
-
-        Retourne le sheets_id créé, ou None en cas d'échec.
+        """Crée un nouveau Google Sheet pour une boutique directement dans le dossier Drive partagé
+        pour contourner la limite de quota du compte de service.
         """
         try:
             client = SheetsService.get_gspread_client()
@@ -181,10 +175,32 @@ class SheetsService:
                 print("❌ Impossible de créer le Sheet : client Google indisponible.")
                 return None
 
-            title = f"WhatsAuto IA - {store_name}"[:100]  # Google limite la longueur du titre
-            spreadsheet = client.create(title)
+            title = f"WhatsAuto IA - {store_name}"[:100]
+            folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
-            # Onglet Catalogue (renomme l'onglet par défaut "Feuille 1")
+            if folder_id:
+                # Création directe dans le dossier partagé via l'API Drive v3
+                drive_http = client.http_client
+                file_metadata = {
+                    'name': title,
+                    'mimeType': 'application/vnd.google-apps.spreadsheet',
+                    'parents': [folder_id]
+                }
+                res = drive_http.post(
+                    'https://www.googleapis.com/drive/v3/files',
+                    json=file_metadata
+                )
+                if res.status_code != 200:
+                    print(f"❌ Erreur API Drive ({res.status_code}) : {res.text}")
+                    return None
+
+                sheet_id = res.json().get('id')
+                spreadsheet = client.open_by_key(sheet_id)
+            else:
+                # Création standard en fallback
+                spreadsheet = client.create(title)
+
+            # Onglet Catalogue
             default_sheet = spreadsheet.sheet1
             default_sheet.update_title("Catalogue")
             default_sheet.append_row(SheetsService.HEADERS)
@@ -196,13 +212,11 @@ class SheetsService:
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
+            # Partage avec l'e-mail du vendeur si renseigné
             if vendor_email:
                 try:
                     spreadsheet.share(vendor_email, perm_type="user", role="writer")
                 except Exception as e:
-                    # Ne bloque pas la création si le partage échoue (ex: email invalide) —
-                    # le Sheet reste accessible via le compte de service, à partager
-                    # manuellement plus tard si besoin.
                     print(f"⚠️ Sheet créé mais partage avec {vendor_email} échoué : {e}")
 
             print(f"✅ Nouveau Google Sheet créé pour '{store_name}' : {spreadsheet.id}")
