@@ -22,7 +22,7 @@ class SheetsService:
         ]
 
         base_dir = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            os.path.dirname(os.path.abspath(__file__))
         )
         creds_path = os.path.join(base_dir, "credentials.json")
 
@@ -169,37 +169,73 @@ class SheetsService:
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
         """
-        Crée un Google Sheet directement dans le dossier Drive partagé via gspread
-        et attribue les droits d'accès à l'e-mail du vendeur.
+        Crée un Google Sheet en copiant un modèle existant pour contourner
+        définitivement la limite de quota (0 octet) du compte de service.
         """
         try:
-            client = SheetsService.get_gspread_client()
-            if not client:
-                print("❌ Client Google gspread indisponible.")
+            creds = SheetsService._get_google_credentials()
+            if not creds:
+                print("❌ Credentials Google introuvables.")
                 return None
 
+            if not creds.valid:
+                creds.refresh(Request())
+
+            client = gspread.authorize(creds)
             title = f"WhatsAuto IA - {store_name}"[:100]
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+            template_id = os.getenv("GOOGLE_SHEETS_TEMPLATE_ID")
 
-            # 1. Création directe du Sheet dans le dossier Drive partagé via gspread
-            if folder_id:
-                spreadsheet = client.create(title, folder_id=folder_id)
+            headers = {
+                "Authorization": f"Bearer {creds.token}",
+                "Content-Type": "application/json",
+            }
+
+            if template_id and folder_id:
+                # 1. Duplication du modèle dans le dossier partagé
+                copy_url = f"https://www.googleapis.com/drive/v3/files/{template_id}/copy?supportsAllDrives=true"
+                body = {
+                    "name": title,
+                    "parents": [folder_id]
+                }
+                res = requests.post(copy_url, headers=headers, json=body)
+
+                if res.status_code != 200:
+                    print(f"❌ Erreur lors de la copie du modèle ({res.status_code}) : {res.text}")
+                    return None
+
+                sheet_id = res.json().get("id")
+                spreadsheet = client.open_by_key(sheet_id)
             else:
-                spreadsheet = client.create(title)
+                # Fallback gspread
+                if folder_id:
+                    spreadsheet = client.create(title, folder_id=folder_id)
+                else:
+                    spreadsheet = client.create(title)
 
-            # 2. Configuration de l'onglet Catalogue
-            default_sheet = spreadsheet.sheet1
-            default_sheet.update_title("Catalogue")
-            default_sheet.append_row(SheetsService.HEADERS)
+            # 2. Configuration / Nettoyage de l'onglet Catalogue
+            try:
+                catalog_sheet = spreadsheet.worksheet("Catalogue")
+            except gspread.exceptions.WorksheetNotFound:
+                catalog_sheet = spreadsheet.sheet1
+                catalog_sheet.update_title("Catalogue")
 
-            # 3. Configuration de l'onglet Commandes
-            commandes_sheet = spreadsheet.add_worksheet(title="Commandes", rows=200, cols=7)
+            catalog_sheet.clear()
+            catalog_sheet.append_row(SheetsService.HEADERS)
+
+            # 3. Configuration / Nettoyage de l'onglet Commandes
+            try:
+                commandes_sheet = spreadsheet.worksheet("Commandes")
+            except gspread.exceptions.WorksheetNotFound:
+                commandes_sheet = spreadsheet.add_worksheet(title="Commandes", rows=200, cols=7)
+
+            commandes_sheet.clear()
             commandes_sheet.append_row([
                 "Date", "Téléphone Client", "Nom Client",
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
-            # 4. Partage d'accès en écriture au vendeur si un email est fourni
+            # 4. Partage d'accès en écriture au vendeur si renseigné
             if vendor_email:
                 try:
                     spreadsheet.share(vendor_email, perm_type="user", role="writer")
