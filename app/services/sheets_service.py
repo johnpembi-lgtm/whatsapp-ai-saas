@@ -15,7 +15,7 @@ class SheetsService:
 
     @staticmethod
     def _get_google_credentials():
-        """Récupère les objets Credentials Google OAuth2."""
+        """Récupère et valide les objets Credentials Google OAuth2."""
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
@@ -85,20 +85,20 @@ class SheetsService:
                         norm_rec.get("description", ""),
                         norm_rec.get("prix", 0),
                         norm_rec.get("stock", 0),
-                        norm_rec.get("image_url", "")
+                        norm_rec.get("image_url", ""),
                     ])
 
                 catalog_sheet.clear()
                 catalog_sheet.append_row(SheetsService.HEADERS)
                 if aligned_rows:
                     catalog_sheet.append_rows(aligned_rows)
-                print(f"✅ Données migrées et réordonnées de '{legacy_sheet.title}' vers 'Catalogue'.")
+                print(f"✅ Données migrées de '{legacy_sheet.title}' vers 'Catalogue'.")
 
             try:
                 spreadsheet.del_worksheet(legacy_sheet)
-                print(f"🗑️ Onglet obsolète '{legacy_sheet.title}' supprimé avec succès.")
+                print(f"🗑️ Onglet obsolète '{legacy_sheet.title}' supprimé.")
             except Exception as e:
-                print(f"⚠️ Impossible de supprimer l'onglet '{legacy_sheet.title}' : {e}")
+                print(f"⚠️ Erreur suppression onglet '{legacy_sheet.title}' : {e}")
 
         return catalog_sheet
 
@@ -118,7 +118,6 @@ class SheetsService:
             sheet = SheetsService.consolidate_and_get_catalog_sheet(spreadsheet)
 
             records = sheet.get_all_records()
-
             products = []
             for row in records:
                 normalized_row = {
@@ -131,12 +130,12 @@ class SheetsService:
             return products
 
         except Exception as e:
-            print(f"❌ Erreur lors de la récupération du catalogue Sheets : {str(e)}")
+            print(f"❌ Erreur récupération catalogue Sheets : {str(e)}")
             return []
 
     @staticmethod
     def append_order(sheets_id, row_data):
-        """Vérifie l'existence de l'onglet 'Commandes', le crée si besoin, et ajoute la commande."""
+        """Ajoute une commande dans l'onglet 'Commandes'."""
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -148,10 +147,7 @@ class SheetsService:
             try:
                 sheet = spreadsheet.worksheet(sheet_name)
             except gspread.exceptions.WorksheetNotFound:
-                print(f"📄 Onglet '{sheet_name}' introuvable. Création automatique...")
-                sheet = spreadsheet.add_worksheet(
-                    title=sheet_name, rows=100, cols=7
-                )
+                sheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=7)
                 headers = [
                     "Date",
                     "Téléphone Client",
@@ -162,18 +158,20 @@ class SheetsService:
                     "Statut",
                 ]
                 sheet.append_row(headers)
-                print(f"✅ Onglet '{sheet_name}' créé avec succès !")
 
             sheet.append_row(row_data)
             return True
 
         except Exception as e:
-            print(f"❌ Erreur lors de l'écriture dans Sheets : {repr(e)}")
+            print(f"❌ Erreur écriture commande Sheets : {repr(e)}")
             return False
 
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
-        """Crée un nouveau Google Sheet pour une boutique directement dans le dossier Drive partagé."""
+        """
+        Crée un Google Sheet via Sheets API v4, l'associe au dossier Drive partagé
+        et octroie les droits d'accès à l'e-mail du vendeur.
+        """
         try:
             creds = SheetsService._get_google_credentials()
             if not creds:
@@ -187,59 +185,59 @@ class SheetsService:
             title = f"WhatsAuto IA - {store_name}"[:100]
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
+            # 1. Création via Sheets API v4 (Bypasse le quota 0 octet du Service Account)
+            sheets_url = "https://sheets.googleapis.com/v4/spreadsheets"
+            headers = {
+                "Authorization": f"Bearer {creds.token}",
+                "Content-Type": "application/json",
+            }
+            body = {"properties": {"title": title}}
+
+            res = requests.post(sheets_url, headers=headers, json=body)
+            if res.status_code != 200:
+                print(f"❌ Erreur API Sheets ({res.status_code}) : {res.text}")
+                return None
+
+            sheet_id = res.json().get("spreadsheetId")
+
+            # 2. Déplacement du fichier créé vers le dossier Drive partagé
             if folder_id:
-                headers = {
-                    "Authorization": f"Bearer {creds.token}",
-                    "Content-Type": "application/json",
-                }
-                # Utilisation des paramètres supportsAllDrives pour contourner la contrainte de quota
-                url = "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true"
-                file_metadata = {
-                    "name": title,
-                    "mimeType": "application/vnd.google-apps.spreadsheet",
-                    "parents": [folder_id],
-                }
+                drive_url = f"https://www.googleapis.com/drive/v3/files/{sheet_id}?addParents={folder_id}&supportsAllDrives=true"
+                move_res = requests.patch(drive_url, headers=headers, json={})
+                if move_res.status_code != 200:
+                    print(f"⚠️ Échec du rattachement au dossier Drive : {move_res.text}")
 
-                res = requests.post(url, headers=headers, json=file_metadata)
+            spreadsheet = client.open_by_key(sheet_id)
 
-                if res.status_code != 200:
-                    print(f"❌ Erreur API Drive ({res.status_code}) : {res.text}")
-                    return None
-
-                sheet_id = res.json().get("id")
-                spreadsheet = client.open_by_key(sheet_id)
-            else:
-                spreadsheet = client.create(title)
-
-            # Onglet Catalogue
+            # Structure initiale de la feuille
             default_sheet = spreadsheet.sheet1
             default_sheet.update_title("Catalogue")
             default_sheet.append_row(SheetsService.HEADERS)
 
-            # Onglet Commandes
             commandes_sheet = spreadsheet.add_worksheet(title="Commandes", rows=200, cols=7)
             commandes_sheet.append_row([
                 "Date", "Téléphone Client", "Nom Client",
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
-            # Partage avec l'e-mail du vendeur si renseigné
+            # 3. Partage d'accès en écriture à l'e-mail du vendeur
             if vendor_email:
                 try:
                     spreadsheet.share(vendor_email, perm_type="user", role="writer")
+                    print(f"📧 Sheet partagé avec succès à l'adresse : {vendor_email}")
                 except Exception as e:
-                    print(f"⚠️ Sheet créé mais partage avec {vendor_email} échoué : {e}")
+                    print(f"⚠️ Erreur partage avec {vendor_email} : {e}")
 
-            print(f"✅ Nouveau Google Sheet créé pour '{store_name}' : {spreadsheet.id}")
+            print(f"✅ Google Sheet configuré pour '{store_name}' (ID: {spreadsheet.id})")
             return spreadsheet.id
 
         except Exception as e:
-            print(f"❌ Erreur lors de la création du Sheet pour '{store_name}' : {repr(e)}")
+            print(f"❌ Erreur création Sheet '{store_name}' : {repr(e)}")
             return None
 
     @staticmethod
     def update_stock(sheets_id, product_name, quantity_ordered):
-        """Déduit automatiquement la quantité commandée du stock d'un produit."""
+        """Déduit la quantité commandée du stock d'un produit."""
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -254,23 +252,21 @@ class SheetsService:
                 if name_in_sheet == product_name.strip().lower():
                     current_stock = int(row.get("stock", 0))
                     new_stock = max(0, current_stock - int(quantity_ordered))
-
                     sheet.update_cell(idx, 4, new_stock)
                     print(f"📉 Stock mis à jour pour '{product_name}' : {current_stock} -> {new_stock}")
                     return True
 
-            print(f"⚠️ Produit '{product_name}' non trouvé dans le catalogue pour déduction.")
             return False
 
         except Exception as e:
-            print(f"❌ Erreur lors de la mise à jour du stock : {repr(e)}")
+            print(f"❌ Erreur mise à jour stock : {repr(e)}")
             return False
 
     @staticmethod
     def add_or_update_product(
         sheets_id, product_name, description, price, stock, image_url
     ):
-        """Ajoute ou met à jour un produit en réécrivant toute la ligne de A à E."""
+        """Ajoute ou met à jour un produit en réécrivant la ligne entière A:E."""
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -286,13 +282,13 @@ class SheetsService:
                 if str(row.get("nom", "")).strip().lower() == product_name.strip().lower():
                     cell_range = f"A{idx}:E{idx}"
                     sheet.update(cell_range, [row_data])
-                    print(f"✅ Produit '{product_name}' mis à jour proprement dans le catalogue Sheets !")
+                    print(f"✅ Produit '{product_name}' mis à jour !")
                     return True
 
             sheet.append_row(row_data)
-            print(f"✅ Nouveau produit '{product_name}' ajouté au catalogue Sheets !")
+            print(f"✅ Produit '{product_name}' ajouté !")
             return True
 
         except Exception as e:
-            print(f"❌ Erreur lors de l'ajout/modification du produit dans Sheets : {repr(e)}")
+            print(f"❌ Erreur mise à jour produit : {repr(e)}")
             return False
