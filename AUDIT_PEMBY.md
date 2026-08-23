@@ -45,15 +45,6 @@
 - `pytest.ini` limite la collecte aux tests automatisés du dossier `tests/` et exclut les scripts de test manuels ;
 - compilation Python de l'ensemble du projet vérifiée après corrections.
 
-## Points à surveiller avant production
-
-1. Le scheduler reste embarqué dans le serveur web. Le déploiement doit conserver **1 seul worker Gunicorn**. Pour une montée en charge, déplacer les relances vers un worker/cron dédié.
-2. La déduplication des webhooks est en mémoire. Après redémarrage ou avec plusieurs instances, un même message peut être retraité. Une table Supabase avec contrainte unique sur l'ID Meta serait plus robuste.
-3. Les commandes et le stock reposent sur Google Sheets. Il n'y a pas de transaction atomique entre validation de commande, baisse éventuelle de stock et notification.
-4. Le schéma SQL Supabase et les politiques RLS ne sont pas présents dans l'archive ; l'isolation réelle dépend donc aussi de la configuration du projet Supabase.
-5. `META_API_VERSION` reste configurable. Vérifier la version supportée dans votre application Meta avant chaque mise à niveau, plutôt que la coder dans plusieurs services.
-6. ImgBB reste un service externe public. Pour des images métier sensibles ou un contrôle plus fin, préférer un stockage privé/maîtrisé avec URLs signées.
-
 ## Variables minimales
 
 Copier `.env.example` vers `.env` et définir au minimum :
