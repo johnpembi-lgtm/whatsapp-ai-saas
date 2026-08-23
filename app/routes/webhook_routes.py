@@ -1,7 +1,7 @@
 import threading
 import logging
-import os
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, request, jsonify, current_app
 
 from app.core.tenant_manager import TenantManager
@@ -15,6 +15,7 @@ MAX_PROCESSED_MESSAGES = 2000
 PROCESSED_MESSAGE_IDS = set()
 PROCESSED_QUEUE = deque()
 PROCESSED_LOCK = threading.Lock()
+MESSAGE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pemby-webhook")
 
 
 def process_message_async(app, tenant, phone_number_id, sender_phone, message_data):
@@ -49,13 +50,12 @@ def handle_webhook():
     """Réception des webhooks WhatsApp en temps réel."""
     
     # 1. Sécurité : Récupération de l'App Secret Meta (et non la SECRET_KEY Flask)
-    app_secret = current_app.config.get("APP_SECRET") or os.getenv("APP_SECRET") or os.getenv("META_APP_SECRET")
-    
-    if app_secret:
-        if not verify_meta_signature(app_secret):
-            return jsonify({"status": "error", "message": "Signature invalide ou non autorisée"}), 403
-    else:
-        logger.warning("⚠️ APP_SECRET non configuré : validation de signature ignorée.")
+    app_secret = current_app.config.get("APP_SECRET")
+    if not app_secret:
+        logger.error("APP_SECRET absent : webhook refusé.")
+        return jsonify({"status": "error", "message": "Configuration webhook incomplète"}), 503
+    if not verify_meta_signature(app_secret):
+        return jsonify({"status": "error", "message": "Signature invalide ou non autorisée"}), 403
 
     data = request.get_json()
     if not data:
@@ -90,10 +90,9 @@ def handle_webhook():
 
                         if tenant:
                             app = current_app._get_current_object()
-                            threading.Thread(
-                                target=process_message_async,
-                                args=(app, tenant, phone_number_id, sender_phone, message),
-                            ).start()
+                            MESSAGE_EXECUTOR.submit(
+                                process_message_async, app, tenant, phone_number_id, sender_phone, message
+                            )
 
         return jsonify({"status": "success"}), 200
 

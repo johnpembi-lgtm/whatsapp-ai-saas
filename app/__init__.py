@@ -5,20 +5,20 @@ from config import Config
 
 scheduler = APScheduler()
 
+
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    if not app.config.get("SECRET_KEY"):
-        app.config["SECRET_KEY"] = "une_cle_secrete_ultra_securisee_2026"
+    # Validation stricte en production. Les configurations de test peuvent
+    # définir TESTING=True et fournir des valeurs factices sans dépendre du .env.
+    if not app.config.get("TESTING") and hasattr(config_class, "validate"):
+        config_class.validate()
 
     app.json.ensure_ascii = False
 
-    # Configuration et démarrage du Scheduler
-    app.config["SCHEDULER_API_ENABLED"] = True
     scheduler.init_app(app)
 
-    # Évite le double démarrage en mode Reload de Flask
     if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         from app.services.retargeting_service import RetargetingService
 
@@ -27,21 +27,29 @@ def create_app(config_class=Config):
                 id="retargeting_job",
                 func=RetargetingService.process_abandoned_carts,
                 trigger="interval",
-                minutes=15
+                minutes=15,
+                max_instances=1,
+                coalesce=True,
             )
-        
+
         if not scheduler.running:
             scheduler.start()
 
-    # Blueprints
     from app.routes.admin_routes import admin_bp
     from app.routes.webhook_routes import webhook_bp
 
     app.register_blueprint(webhook_bp)
     app.register_blueprint(admin_bp)
 
+    @app.after_request
+    def add_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
+
     @app.route("/", methods=["GET"])
     def home():
-        return {"status": "ok", "service": "WhatsAuto IA Backend"}, 200
+        return {"status": "ok", "service": "Pemby Backend"}, 200
 
     return app

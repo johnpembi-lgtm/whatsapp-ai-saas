@@ -42,6 +42,10 @@ def handle_customer_message(tenant, phone_number_id, sender_phone, message_data,
     if user_text is None:
         return  # Type de message non géré côté client (audio, sticker...)
 
+    # Récupère l'historique AVANT d'enregistrer le message courant afin de ne
+    # pas injecter deux fois le même message utilisateur dans le prompt IA.
+    history = database.get_conversation_history(phone_number_id, sender_phone, limit=6)
+
     # Historique conservé même en HUMAN_MODE, pour que le vendeur ait le contexte complet.
     database.save_message(phone_number_id, sender_phone, "user", user_text)
 
@@ -68,7 +72,6 @@ def handle_customer_message(tenant, phone_number_id, sender_phone, message_data,
 
     # --- Traitement IA classique ---
     CartService.update_interaction(phone_number_id, sender_phone)
-    history = database.get_conversation_history(phone_number_id, sender_phone, limit=6)
     catalog = SheetsService.fetch_catalog(tenant.get("sheets_id"))
 
     ai_reply = AIService.generate_response(
@@ -76,21 +79,31 @@ def handle_customer_message(tenant, phone_number_id, sender_phone, message_data,
     )
     print(f"🤖 Réponse IA générée pour [{sender_phone}] : {ai_reply}")
 
-    database.save_message(phone_number_id, sender_phone, "assistant", ai_reply)
-
     image_match = re.search(r"\[SEND_IMAGE:\s*(https?://[^\s\]]+)\]", ai_reply)
     if image_match:
         image_url = image_match.group(1)
         clean_reply = re.sub(r"\[SEND_IMAGE:\s*https?://[^\s\]]+\]", "", ai_reply).strip()
-        WhatsAppService.send_image(
+        sent = WhatsAppService.send_image(
             phone_number_id=phone_number_id, recipient_phone=sender_phone,
             image_url=image_url, caption_text=clean_reply, access_token=access_token,
         )
+        # Si l'image échoue, le client reçoit tout de même le texte utile.
+        if not sent and clean_reply:
+            WhatsAppService.send_message(
+                phone_number_id=phone_number_id, recipient_phone=sender_phone,
+                message_text=clean_reply, access_token=access_token,
+            )
+        stored_reply = clean_reply or "Image du produit envoyée."
     else:
+        clean_reply = ai_reply
         WhatsAppService.send_message(
             phone_number_id=phone_number_id, recipient_phone=sender_phone,
-            message_text=ai_reply, access_token=access_token,
+            message_text=clean_reply, access_token=access_token,
         )
+        stored_reply = clean_reply
+
+    # Ne stocke pas le tag technique SEND_IMAGE dans l'historique visible.
+    database.save_message(phone_number_id, sender_phone, "assistant", stored_reply)
 
     OrdersService.record_order_if_completed(
         tenant=tenant, phone_number_id=phone_number_id, sender_phone=sender_phone,

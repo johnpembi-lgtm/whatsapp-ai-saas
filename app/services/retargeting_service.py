@@ -1,6 +1,5 @@
 import os
 from datetime import datetime, timedelta, timezone
-from flask import current_app
 from app.core.database import supabase_db
 from app.core.tenant_manager import TenantManager
 from app.services.whatsapp_service import WhatsAppService
@@ -28,7 +27,6 @@ class RetargetingService:
     def _get_access_token(tenant):
         return (
             tenant.get("whatsapp_access_token")
-            or current_app.config.get("WHATSAPP_ACCESS_TOKEN")
             or os.getenv("WHATSAPP_ACCESS_TOKEN")
         )
 
@@ -43,7 +41,7 @@ class RetargetingService:
             access_token=access_token,
         )
 
-        if res_wa and ("messages" in res_wa or "messaging_product" in res_wa):
+        if res_wa:
             supabase_db.table("cart_tracking").update({
                 "status": next_status,
                 "reminder_count": next_reminder_count,

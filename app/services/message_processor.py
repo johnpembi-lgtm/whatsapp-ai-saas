@@ -20,6 +20,10 @@ def resolve_access_token(tenant):
     )
 
 
+def _normalize_phone(value):
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
 def process(tenant, phone_number_id, sender_phone, message_data):
     """
     MESSAGE
@@ -28,7 +32,7 @@ def process(tenant, phone_number_id, sender_phone, message_data):
        │
        └── CLIENT  → customer_processor (respecte BOT_MODE / HUMAN_MODE)
     """
-    is_vendor = str(sender_phone) == str(tenant.get("vendor_phone"))
+    is_vendor = _normalize_phone(sender_phone) == _normalize_phone(tenant.get("vendor_phone"))
     access_token = resolve_access_token(tenant)
 
     if is_vendor:

@@ -354,9 +354,8 @@ def _handle_envoyer(phone_number_id, vendor_phone, args, access_token):
         message_text=message_text,
         access_token=access_token,
     )
-    database.save_message(phone_number_id, customer_phone, "assistant", message_text)
-
     if success:
+        database.save_message(phone_number_id, customer_phone, "assistant", message_text)
         _reply(phone_number_id, vendor_phone, f"📤 Message envoyé à {customer_phone}.", access_token)
     else:
         _reply(phone_number_id, vendor_phone, f"❌ Échec de l'envoi à {customer_phone}.", access_token)

@@ -1,6 +1,9 @@
 import os
+import logging
 import requests
 from flask import current_app
+
+logger = logging.getLogger(__name__)
 
 
 class WhatsAppService:
@@ -23,6 +26,13 @@ class WhatsAppService:
         return os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
 
     @staticmethod
+    def _get_api_version():
+        try:
+            return current_app.config.get("META_API_VERSION", "v20.0")
+        except RuntimeError:
+            return os.getenv("META_API_VERSION", "v20.0")
+
+    @staticmethod
     def _get_headers(access_token=None):
         token = WhatsAppService._resolve_token(access_token)
         return {
@@ -35,11 +45,12 @@ class WhatsAppService:
         """Envoie un message texte simple."""
         token = WhatsAppService._resolve_token(access_token)
         
-        # Log de débogage pour vérifier la validité
-        masked_token = f"{token[:10]}...{token[-5:]}" if len(token) > 15 else "INVALIDE/VIDE"
-        print(f"🔍 DEBUG ENVOI TEXTE | PhoneID: {phone_number_id} | Token: {masked_token}")
+        if not token:
+            logger.error("Token WhatsApp absent : envoi texte annulé.")
+            return False
 
-        url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
+        api_version = WhatsAppService._get_api_version()
+        url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -74,10 +85,12 @@ class WhatsAppService:
         """Envoie une photo/image avec une légende facultative à partir d'un lien HTTPS public."""
         token = WhatsAppService._resolve_token(access_token)
         
-        masked_token = f"{token[:10]}...{token[-5:]}" if len(token) > 15 else "INVALIDE/VIDE"
-        print(f"🔍 DEBUG ENVOI IMAGE | PhoneID: {phone_number_id} | Token: {masked_token}")
+        if not token:
+            logger.error("Token WhatsApp absent : envoi image annulé.")
+            return False
 
-        url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
+        api_version = WhatsAppService._get_api_version()
+        url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",

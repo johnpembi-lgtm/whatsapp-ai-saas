@@ -24,3 +24,25 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+.venv/
+.venv-1/
+__pycache__/
+*.pyc
+
+.env
+.env.*
+!.env.example
+
+.vscode/
+.idea/
+
+*.log
+.pytest_cache/
+
+credentials.json
+service-account*.json
+.env
+.env.*
+!.env.example
+*env copy*
