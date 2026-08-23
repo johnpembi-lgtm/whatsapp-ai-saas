@@ -56,4 +56,3 @@ Copier `.env.example` vers `.env` et définir au minimum :
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 
-Puis compléter les clés WhatsApp, Groq, Google Sheets et ImgBB selon les fonctions utilisées.
