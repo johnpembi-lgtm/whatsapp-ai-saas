@@ -169,70 +169,49 @@ class SheetsService:
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
         """
-        Crée un Google Sheet via Sheets API v4, l'associe au dossier Drive partagé
-        et octroie les droits d'accès à l'e-mail du vendeur.
+        Crée un Google Sheet directement dans le dossier Drive partagé via gspread
+        et attribue les droits d'accès à l'e-mail du vendeur.
         """
         try:
-            creds = SheetsService._get_google_credentials()
-            if not creds:
-                print("❌ Credentials introuvables.")
+            client = SheetsService.get_gspread_client()
+            if not client:
+                print("❌ Client Google gspread indisponible.")
                 return None
 
-            if not creds.valid:
-                creds.refresh(Request())
-
-            client = gspread.authorize(creds)
             title = f"WhatsAuto IA - {store_name}"[:100]
             folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
-            # 1. Création via Sheets API v4 (Bypasse le quota 0 octet du Service Account)
-            sheets_url = "https://sheets.googleapis.com/v4/spreadsheets"
-            headers = {
-                "Authorization": f"Bearer {creds.token}",
-                "Content-Type": "application/json",
-            }
-            body = {"properties": {"title": title}}
-
-            res = requests.post(sheets_url, headers=headers, json=body)
-            if res.status_code != 200:
-                print(f"❌ Erreur API Sheets ({res.status_code}) : {res.text}")
-                return None
-
-            sheet_id = res.json().get("spreadsheetId")
-
-            # 2. Déplacement du fichier créé vers le dossier Drive partagé
+            # 1. Création directe du Sheet dans le dossier Drive partagé via gspread
             if folder_id:
-                drive_url = f"https://www.googleapis.com/drive/v3/files/{sheet_id}?addParents={folder_id}&supportsAllDrives=true"
-                move_res = requests.patch(drive_url, headers=headers, json={})
-                if move_res.status_code != 200:
-                    print(f"⚠️ Échec du rattachement au dossier Drive : {move_res.text}")
+                spreadsheet = client.create(title, folder_id=folder_id)
+            else:
+                spreadsheet = client.create(title)
 
-            spreadsheet = client.open_by_key(sheet_id)
-
-            # Structure initiale de la feuille
+            # 2. Configuration de l'onglet Catalogue
             default_sheet = spreadsheet.sheet1
             default_sheet.update_title("Catalogue")
             default_sheet.append_row(SheetsService.HEADERS)
 
+            # 3. Configuration de l'onglet Commandes
             commandes_sheet = spreadsheet.add_worksheet(title="Commandes", rows=200, cols=7)
             commandes_sheet.append_row([
                 "Date", "Téléphone Client", "Nom Client",
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
-            # 3. Partage d'accès en écriture à l'e-mail du vendeur
+            # 4. Partage d'accès en écriture au vendeur si un email est fourni
             if vendor_email:
                 try:
                     spreadsheet.share(vendor_email, perm_type="user", role="writer")
                     print(f"📧 Sheet partagé avec succès à l'adresse : {vendor_email}")
                 except Exception as e:
-                    print(f"⚠️ Erreur partage avec {vendor_email} : {e}")
+                    print(f"⚠️ Sheet créé mais échec du partage avec {vendor_email} : {e}")
 
-            print(f"✅ Google Sheet configuré pour '{store_name}' (ID: {spreadsheet.id})")
+            print(f"✅ Google Sheet configuré avec succès pour '{store_name}' (ID: {spreadsheet.id})")
             return spreadsheet.id
 
         except Exception as e:
-            print(f"❌ Erreur création Sheet '{store_name}' : {repr(e)}")
+            print(f"❌ Erreur lors de la création du Sheet pour '{store_name}' : {repr(e)}")
             return None
 
     @staticmethod
