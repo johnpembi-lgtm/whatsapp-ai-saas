@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -81,7 +82,7 @@ def update_cart_tracking(phone_number_id, customer_phone, last_product=None, sta
             "phone_number_id": str(phone_number_id),
             "customer_phone": str(customer_phone),
             "status": status,
-            "last_interaction": "now()"
+            "last_interaction": datetime.now(timezone.utc).isoformat()
         }
         if last_product:
             payload["last_product"] = last_product
@@ -145,7 +146,7 @@ def set_conversation_mode(phone_number_id, customer_phone, mode):
                 "phone_number_id": str(phone_number_id),
                 "customer_phone": str(customer_phone),
                 "mode": mode,
-                "updated_at": "now()",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             },
             on_conflict="phone_number_id,customer_phone",
         ).execute()

@@ -35,7 +35,9 @@ def get_mode(phone_number_id, customer_phone):
 
 def activate_human_mode(phone_number_id, customer_phone, tenant, access_token, trigger_message=""):
     """Bascule la conversation en HUMAN_MODE et notifie le vendeur."""
-    database.set_conversation_mode(phone_number_id, customer_phone, "human")
+    changed = database.set_conversation_mode(phone_number_id, customer_phone, "human")
+    if not changed:
+        return False
 
     vendor_phone = tenant.get("vendor_phone")
     if vendor_phone:

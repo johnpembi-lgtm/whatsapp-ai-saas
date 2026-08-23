@@ -1,6 +1,8 @@
 import os
 import functools
-from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
+import hmac
+import secrets
+from flask import Blueprint, render_template, request, redirect, url_for, flash, Response, current_app, session, abort
 from app.core.tenant_manager import TenantManager
 from app.core import database
 from app.services.sheets_service import SheetsService
@@ -13,10 +15,10 @@ def admin_required(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
         auth = request.authorization
-        expected_user = os.getenv("ADMIN_USERNAME", "admin")
-        expected_pass = os.getenv("ADMIN_PASSWORD", "ChangeMeSecretKey2026!")
+        expected_user = current_app.config.get("ADMIN_USERNAME", "admin")
+        expected_pass = current_app.config.get("ADMIN_PASSWORD")
 
-        if not auth or auth.username != expected_user or auth.password != expected_pass:
+        if not expected_pass or not auth or auth.username != expected_user or auth.password != expected_pass:
             return Response(
                 "Accès refusé. Veuillez fournir des identifiants valides.",
                 401,
@@ -30,12 +32,21 @@ def admin_required(f):
 @admin_required
 def dashboard():
     tenants = TenantManager.get_tenants()
-    return render_template("admin.html", tenants=tenants)
+    csrf_token = session.get("csrf_token")
+    if not csrf_token:
+        csrf_token = secrets.token_urlsafe(32)
+        session["csrf_token"] = csrf_token
+    return render_template("admin.html", tenants=tenants, csrf_token=csrf_token)
 
 
 @admin_bp.route("/admin/add-tenant", methods=["POST"])
 @admin_required
 def add_tenant():
+    expected_csrf = session.get("csrf_token", "")
+    received_csrf = request.form.get("csrf_token", "")
+    if not expected_csrf or not hmac.compare_digest(expected_csrf, received_csrf):
+        abort(400, description="Jeton CSRF invalide.")
+
     store_id = request.form.get("store_id")
     phone_number_id = request.form.get("phone_number_id")
     vendor_phone = request.form.get("vendor_phone")

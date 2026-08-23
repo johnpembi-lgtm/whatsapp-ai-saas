@@ -1,16 +1,24 @@
+"""Petit diagnostic manuel Gemini. Non utilisé par l'application Pemby."""
 import os
-import google.generativeai as genai
 from dotenv import load_dotenv
 
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
 
-genai.configure(api_key=api_key)
+def main():
+    from google import genai
 
-print("--- Modèles disponibles pour votre clé API ---")
-try:
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            print(m.name)
-except Exception as e:
-    print(f"Erreur : {e}")
+    load_dotenv()
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise SystemExit("GEMINI_API_KEY manquante.")
+
+    client = genai.Client(api_key=api_key)
+    print("--- Modèles Gemini disponibles ---")
+    try:
+        for model in client.models.list():
+            print(model.name)
+    except Exception as exc:
+        print(f"Erreur : {exc}")
+
+
+if __name__ == "__main__":
+    main()

@@ -23,7 +23,8 @@ class StorageService:
 
         try:
             # 1. Récupération de l'URL temporaire de l'image auprès de Meta
-            meta_url = f"https://graph.facebook.com/v20.0/{media_id}"
+            api_version = os.getenv("META_API_VERSION", "v20.0")
+            meta_url = f"https://graph.facebook.com/{api_version}/{media_id}"
             headers = {"Authorization": f"Bearer {access_token}"}
             res = requests.get(meta_url, headers=headers, timeout=10)
 
@@ -32,6 +33,9 @@ class StorageService:
                 return None
 
             download_url = res.json().get("url")
+            if not download_url:
+                print("❌ Meta n'a retourné aucune URL de téléchargement.")
+                return None
 
             # 2. Téléchargement du contenu binaire de l'image depuis Meta
             image_res = requests.get(download_url, headers=headers, timeout=15)
