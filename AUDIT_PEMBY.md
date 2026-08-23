@@ -1,11 +1,4 @@
-# Audit technique — Pemby
-
-## Résumé
-
-Cette version corrige les principaux problèmes relevés dans l'archive d'origine sans changer le périmètre métier du projet.
-
-## Corrections appliquées
-
+# Audit technique — Whatsapp Saas
 ### Sécurité
 
 - suppression de la clé Flask de secours codée en dur ;
