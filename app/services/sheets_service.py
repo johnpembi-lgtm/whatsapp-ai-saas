@@ -4,7 +4,8 @@ import json
 import os
 import gspread
 import requests
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.auth.transport.requests import Request
 
 
@@ -15,20 +16,46 @@ class SheetsService:
 
     @staticmethod
     def _get_google_credentials():
-        """Récupère et valide les objets Credentials Google OAuth2."""
+        """
+        Récupère et valide les identifiants Google.
+        Priorité 1 : OAuth2 Utilisateur (whatsautoia@gmail.com) via Refresh Token
+        Priorité 2 : Service Account (Fallback legacy)
+        """
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
 
-        base_dir = os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))
-        )
+        # --- 1. Tentative avec OAuth2 Utilisateur (whatsautoia@gmail.com) ---
+        client_id = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
+
+        if client_id and client_secret and refresh_token:
+            try:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=refresh_token,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=scopes,
+                )
+                if not creds.valid:
+                    creds.refresh(Request())
+                return creds
+            except Exception as e:
+                print(f"⚠️ Échec de l'authentification OAuth2 Utilisateur : {e}")
+
+        # --- 2. Fallback sur Service Account (Fichier local ou Variable d'environnement) ---
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         creds_path = os.path.join(base_dir, "credentials.json")
 
         if os.path.exists(creds_path):
             try:
-                return Credentials.from_service_account_file(creds_path, scopes=scopes)
+                return ServiceAccountCredentials.from_service_account_file(
+                    creds_path, scopes=scopes
+                )
             except Exception as e:
                 print(f"❌ Erreur lors du chargement de {creds_path} : {e}")
 
@@ -36,7 +63,9 @@ class SheetsService:
         if creds_env:
             try:
                 creds_dict = json.loads(creds_env)
-                return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+                return ServiceAccountCredentials.from_service_account_info(
+                    creds_dict, scopes=scopes
+                )
             except Exception as e:
                 print(f"❌ Erreur lors du parsing de GOOGLE_CREDENTIALS_JSON : {e}")
 
@@ -169,8 +198,7 @@ class SheetsService:
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
         """
-        Crée un Google Sheet en copiant un modèle existant pour contourner
-        définitivement la limite de quota (0 octet) du compte de service.
+        Crée un Google Sheet pour une nouvelle boutique au nom du compte whatsautoia@gmail.com.
         """
         try:
             creds = SheetsService._get_google_credentials()
@@ -192,7 +220,7 @@ class SheetsService:
             }
 
             if template_id and folder_id:
-                # 1. Duplication du modèle dans le dossier partagé
+                # 1. Duplication du modèle dans le dossier Drive dédié
                 copy_url = f"https://www.googleapis.com/drive/v3/files/{template_id}/copy?supportsAllDrives=true"
                 body = {
                     "name": title,
@@ -207,7 +235,7 @@ class SheetsService:
                 sheet_id = res.json().get("id")
                 spreadsheet = client.open_by_key(sheet_id)
             else:
-                # Fallback gspread
+                # Fallback création directe gspread dans le dossier
                 if folder_id:
                     spreadsheet = client.create(title, folder_id=folder_id)
                 else:
