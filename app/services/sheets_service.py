@@ -263,13 +263,17 @@ class SheetsService:
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
-            # 4. Partage d'accès en écriture au vendeur si renseigné
+            # 4. Partage d'accès en écriture au vendeur (si renseigné et différent du propriétaire)
             if vendor_email:
-                try:
-                    spreadsheet.share(vendor_email, perm_type="user", role="writer")
-                    print(f"📧 Sheet partagé avec succès à l'adresse : {vendor_email}")
-                except Exception as e:
-                    print(f"⚠️ Sheet créé mais échec du partage avec {vendor_email} : {e}")
+                clean_email = str(vendor_email).strip().lower()
+                if clean_email and clean_email != "whatsautoia@gmail.com":
+                    try:
+                        spreadsheet.share(clean_email, perm_type="user", role="writer")
+                        print(f"📧 Sheet partagé avec succès à l'adresse : {clean_email}")
+                    except Exception as e:
+                        print(f"⚠️ Sheet créé mais échec du partage avec {clean_email} : {e}")
+                else:
+                    print(f"ℹ️ Aucun partage externe nécessaire pour l'adresse : '{vendor_email}'")
 
             print(f"✅ Google Sheet configuré avec succès pour '{store_name}' (ID: {spreadsheet.id})")
             return spreadsheet.id
