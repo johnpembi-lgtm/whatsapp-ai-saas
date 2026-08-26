@@ -58,18 +58,18 @@ def add_tenant():
         flash("Les champs Store ID, Phone Number ID et Numéro Vendeur sont obligatoires.", "error")
         return redirect(url_for("admin.dashboard"))
 
-    # --- Onboarding facilité (Phase 5) : création automatique du Sheet si vide ---
+    # --- Onboarding automatique via OAuth2 (whatsautoia@gmail.com) ---
     if not sheets_id:
         sheets_id = SheetsService.create_store_sheet(store_id, vendor_email=vendor_email)
         if not sheets_id:
             flash(
-                "Impossible de créer automatiquement le Google Sheet. "
-                "Vérifiez la configuration Google (credentials.json) ou renseignez "
-                "manuellement un ID de Sheet existant.",
+                "❌ Échec de la création automatique du Google Sheet. "
+                "Vérifiez vos variables d'environnement OAuth2 sur Render (GOOGLE_CLIENT_ID, GOOGLE_REFRESH_TOKEN, etc.) "
+                "ou consultez les logs de l'application.",
                 "error",
             )
             return redirect(url_for("admin.dashboard"))
-        flash(f"Google Sheet créé automatiquement pour '{store_id}'.", "success")
+        flash(f"✅ Google Sheet créé automatiquement avec succès pour '{store_id}'.", "success")
 
     success = TenantManager.add_or_update_tenant(
         phone_number_id=phone_number_id,

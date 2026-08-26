@@ -46,3 +46,6 @@ service-account*.json
 .env.*
 !.env.example
 *env copy*
+
+get_refresh_token.py
+check_quota.py
