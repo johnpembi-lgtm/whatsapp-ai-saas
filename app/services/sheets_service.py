@@ -219,29 +219,34 @@ class SheetsService:
                 "Content-Type": "application/json",
             }
 
+            spreadsheet = None
+
+            # 1. Tentative avec modèle Google Sheets
             if template_id and folder_id:
-                # 1. Duplication du modèle dans le dossier Drive dédié
                 copy_url = f"https://www.googleapis.com/drive/v3/files/{template_id}/copy?supportsAllDrives=true"
                 body = {
                     "name": title,
                     "parents": [folder_id]
                 }
                 res = requests.post(copy_url, headers=headers, json=body)
+                if res.status_code == 200:
+                    sheet_id = res.json().get("id")
+                    spreadsheet = client.open_by_key(sheet_id)
+                else:
+                    print(f"⚠️ Copie du modèle impossible ({res.status_code}). Tentative de création standard...")
 
-                if res.status_code != 200:
-                    print(f"❌ Erreur lors de la copie du modèle ({res.status_code}) : {res.text}")
-                    return None
-
-                sheet_id = res.json().get("id")
-                spreadsheet = client.open_by_key(sheet_id)
-            else:
-                # Fallback création directe gspread dans le dossier
+            # 2. Création directe si aucun modèle n'est spécifié ou si la copie a échoué
+            if not spreadsheet:
                 if folder_id:
-                    spreadsheet = client.create(title, folder_id=folder_id)
+                    try:
+                        spreadsheet = client.create(title, folder_id=folder_id)
+                    except Exception as err_folder:
+                        print(f"⚠️ Erreur d'accès au dossier ID '{folder_id}' ({err_folder}). Création à la racine du Drive...")
+                        spreadsheet = client.create(title)
                 else:
                     spreadsheet = client.create(title)
 
-            # 2. Configuration / Nettoyage de l'onglet Catalogue
+            # 3. Configuration / Nettoyage de l'onglet Catalogue
             try:
                 catalog_sheet = spreadsheet.worksheet("Catalogue")
             except gspread.exceptions.WorksheetNotFound:
@@ -251,7 +256,7 @@ class SheetsService:
             catalog_sheet.clear()
             catalog_sheet.append_row(SheetsService.HEADERS)
 
-            # 3. Configuration / Nettoyage de l'onglet Commandes
+            # 4. Configuration / Nettoyage de l'onglet Commandes
             try:
                 commandes_sheet = spreadsheet.worksheet("Commandes")
             except gspread.exceptions.WorksheetNotFound:
@@ -263,7 +268,7 @@ class SheetsService:
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
-            # 4. Partage d'accès en écriture au vendeur (si renseigné et différent du propriétaire)
+            # 5. Partage d'accès au vendeur
             if vendor_email:
                 clean_email = str(vendor_email).strip().lower()
                 if clean_email and clean_email != "whatsautoia@gmail.com":
