@@ -23,7 +23,8 @@ class Config:
     IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
 
     SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+    # Utilise SUPABASE_SERVICE_ROLE_KEY en priorité, sinon SUPABASE_KEY
+    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 
     # L'API REST de Flask-APScheduler n'est pas nécessaire au fonctionnement
     # normal et reste désactivée pour ne pas exposer les commandes du scheduler.
