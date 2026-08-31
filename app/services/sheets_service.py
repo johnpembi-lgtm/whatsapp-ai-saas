@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import time
 import gspread
 import requests
 from google.oauth2.credentials import Credentials
@@ -14,11 +15,15 @@ class SheetsService:
 
     HEADERS = ["nom", "description", "prix", "stock", "image_url"]
 
+    # Cache mémoire du catalogue : { sheets_id: (timestamp, produits) }
+    _catalog_cache = {}
+    _CATALOG_CACHE_TTL_SECONDS = 300  # 5 minutes
+
     @staticmethod
     def _get_google_credentials():
         """
         Récupère et valide les identifiants Google.
-        Priorité 1 : OAuth2 Utilisateur (whatsautoia@gmail.com) via Refresh Token
+        Priorité 1 : OAuth2 Utilisateur via Refresh Token
         Priorité 2 : Service Account (Fallback legacy)
         """
         scopes = [
@@ -26,7 +31,7 @@ class SheetsService:
             "https://www.googleapis.com/auth/drive",
         ]
 
-        # --- 1. Tentative avec OAuth2 Utilisateur (whatsautoia@gmail.com) ---
+        # --- 1. OAuth2 Utilisateur ---
         client_id = os.getenv("GOOGLE_CLIENT_ID")
         client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
         refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
@@ -47,7 +52,7 @@ class SheetsService:
             except Exception as e:
                 print(f"⚠️ Échec de l'authentification OAuth2 Utilisateur : {e}")
 
-        # --- 2. Fallback sur Service Account (Fichier local ou Variable d'environnement) ---
+        # --- 2. Service Account ---
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         creds_path = os.path.join(base_dir, "credentials.json")
 
@@ -132,11 +137,20 @@ class SheetsService:
         return catalog_sheet
 
     @staticmethod
+    def invalidate_catalog_cache(sheets_id):
+        """Invalide le cache pour un magasin donné."""
+        SheetsService._catalog_cache.pop(sheets_id, None)
+
+    @staticmethod
     def fetch_catalog(sheets_id):
-        """Récupère le catalogue de produits depuis Google Sheets."""
+        """Récupère le catalogue de produits depuis Google Sheets (avec cache de 5 min)."""
         if not sheets_id or sheets_id == "ID_DU_GOOGLE_SHEETS_CLIENT":
             print("⚠️ Aucun ID Google Sheets valide configuré pour ce tenant.")
             return []
+
+        cached = SheetsService._catalog_cache.get(sheets_id)
+        if cached and (time.time() - cached[0]) < SheetsService._CATALOG_CACHE_TTL_SECONDS:
+            return cached[1]
 
         try:
             client = SheetsService.get_gspread_client()
@@ -154,8 +168,11 @@ class SheetsService:
                     for k, v in row.items()
                     if k
                 }
-                products.append(normalized_row)
+                # Ne conserve que les lignes qui possèdent au moins un Nom
+                if normalized_row.get("nom"):
+                    products.append(normalized_row)
 
+            SheetsService._catalog_cache[sheets_id] = (time.time(), products)
             return products
 
         except Exception as e:
@@ -197,9 +214,7 @@ class SheetsService:
 
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
-        """
-        Crée un Google Sheet pour une nouvelle boutique au nom du compte whatsautoia@gmail.com.
-        """
+        """Crée et configure un Google Sheet pour une nouvelle boutique."""
         try:
             creds = SheetsService._get_google_credentials()
             if not creds:
@@ -221,13 +236,10 @@ class SheetsService:
 
             spreadsheet = None
 
-            # 1. Tentative avec modèle Google Sheets
+            # 1. Copie depuis le modèle
             if template_id and folder_id:
                 copy_url = f"https://www.googleapis.com/drive/v3/files/{template_id}/copy?supportsAllDrives=true"
-                body = {
-                    "name": title,
-                    "parents": [folder_id]
-                }
+                body = {"name": title, "parents": [folder_id]}
                 res = requests.post(copy_url, headers=headers, json=body)
                 if res.status_code == 200:
                     sheet_id = res.json().get("id")
@@ -235,18 +247,17 @@ class SheetsService:
                 else:
                     print(f"⚠️ Copie du modèle impossible ({res.status_code}). Tentative de création standard...")
 
-            # 2. Création directe si aucun modèle n'est spécifié ou si la copie a échoué
+            # 2. Création directe si nécessaire
             if not spreadsheet:
+                spreadsheet = client.create(title)
                 if folder_id:
                     try:
-                        spreadsheet = client.create(title, folder_id=folder_id)
-                    except Exception as err_folder:
-                        print(f"⚠️ Erreur d'accès au dossier ID '{folder_id}' ({err_folder}). Création à la racine du Drive...")
-                        spreadsheet = client.create(title)
-                else:
-                    spreadsheet = client.create(title)
+                        # Déplacement dans le dossier Drive via gspread / Drive API
+                        client.insert_file(spreadsheet.id, folder_id=folder_id)
+                    except Exception:
+                        pass
 
-            # 3. Configuration / Nettoyage de l'onglet Catalogue
+            # 3. Onglet Catalogue
             try:
                 catalog_sheet = spreadsheet.worksheet("Catalogue")
             except gspread.exceptions.WorksheetNotFound:
@@ -256,7 +267,7 @@ class SheetsService:
             catalog_sheet.clear()
             catalog_sheet.append_row(SheetsService.HEADERS)
 
-            # 4. Configuration / Nettoyage de l'onglet Commandes
+            # 4. Onglet Commandes
             try:
                 commandes_sheet = spreadsheet.worksheet("Commandes")
             except gspread.exceptions.WorksheetNotFound:
@@ -268,23 +279,21 @@ class SheetsService:
                 "Adresse / Livraison", "Articles Commandés", "Total (DH)", "Statut",
             ])
 
-            # 5. Partage d'accès au vendeur
+            # 5. Partage
             if vendor_email:
                 clean_email = str(vendor_email).strip().lower()
                 if clean_email and clean_email != "whatsautoia@gmail.com":
                     try:
                         spreadsheet.share(clean_email, perm_type="user", role="writer")
-                        print(f"📧 Sheet partagé avec succès à l'adresse : {clean_email}")
+                        print(f"📧 Sheet partagé avec succès à : {clean_email}")
                     except Exception as e:
-                        print(f"⚠️ Sheet créé mais échec du partage avec {clean_email} : {e}")
-                else:
-                    print(f"ℹ️ Aucun partage externe nécessaire pour l'adresse : '{vendor_email}'")
+                        print(f"⚠️ Échec du partage avec {clean_email} : {e}")
 
             print(f"✅ Google Sheet configuré avec succès pour '{store_name}' (ID: {spreadsheet.id})")
             return spreadsheet.id
 
         except Exception as e:
-            print(f"❌ Erreur lors de la création du Sheet pour '{store_name}' : {repr(e)}")
+            print(f"❌ Erreur création Sheet '{store_name}' : {repr(e)}")
             return None
 
     @staticmethod
@@ -304,7 +313,10 @@ class SheetsService:
                 if name_in_sheet == product_name.strip().lower():
                     current_stock = int(row.get("stock", 0))
                     new_stock = max(0, current_stock - int(quantity_ordered))
+                    
+                    # Mise à jour de la cellule de stock (colonne D = 4)
                     sheet.update_cell(idx, 4, new_stock)
+                    SheetsService.invalidate_catalog_cache(sheets_id)
                     print(f"📉 Stock mis à jour pour '{product_name}' : {current_stock} -> {new_stock}")
                     return True
 
@@ -315,10 +327,8 @@ class SheetsService:
             return False
 
     @staticmethod
-    def add_or_update_product(
-        sheets_id, product_name, description, price, stock, image_url
-    ):
-        """Ajoute ou met à jour un produit en réécrivant la ligne entière A:E."""
+    def add_or_update_product(sheets_id, product_name, description, price, stock, image_url):
+        """Ajoute ou met à jour un produit en réécrivant la ligne A:E."""
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -333,11 +343,14 @@ class SheetsService:
             for idx, row in enumerate(records, start=2):
                 if str(row.get("nom", "")).strip().lower() == product_name.strip().lower():
                     cell_range = f"A{idx}:E{idx}"
-                    sheet.update(cell_range, [row_data])
+                    # Compatibilité gspread v6+
+                    sheet.update(range_name=cell_range, values=[row_data])
+                    SheetsService.invalidate_catalog_cache(sheets_id)
                     print(f"✅ Produit '{product_name}' mis à jour !")
                     return True
 
             sheet.append_row(row_data)
+            SheetsService.invalidate_catalog_cache(sheets_id)
             print(f"✅ Produit '{product_name}' ajouté !")
             return True
 

@@ -69,6 +69,7 @@ class RetargetingService:
         print(f"⏰ [Relance 1 - Gratuit 24h] {len(carts)} panier(s) éligible(s).")
 
         for cart in carts:
+            # Récupération ultra-rapide en mémoire sans ré-interroger Supabase (N+1 évité)
             tenant = TenantManager.get_tenant_by_phone_id(cart["phone_number_id"])
             if not tenant:
                 continue
@@ -107,6 +108,7 @@ class RetargetingService:
         print(f"⏰ [Relance 2 - Ultime relance < 24h] {len(carts)} panier(s) éligible(s).")
 
         for cart in carts:
+            # Récupération ultra-rapide en mémoire sans ré-interroger Supabase (N+1 évité)
             tenant = TenantManager.get_tenant_by_phone_id(cart["phone_number_id"])
             if not tenant:
                 continue
