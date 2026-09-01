@@ -46,8 +46,11 @@ class TenantManager:
             res = supabase.table("tenants").select("*").execute()
             tenants = {}
             for row in res.data:
-                # Injection de la clé tenant_id pour compatibilité
+                # Injection de clés d'alias pour la compatibilité avec le reste du projet
                 row["tenant_id"] = row.get("id")
+                row["store_id"] = row.get("name") or row.get("store_id")
+                row["sheets_id"] = row.get("google_sheet_id") or row.get("sheets_id")
+
                 phone_id = row.get("whatsapp_phone_number_id")
                 if phone_id:
                     tenants[phone_id] = row
@@ -85,15 +88,17 @@ class TenantManager:
                 return None
 
             tenant = res.data[0]
-            
-            # Vérification de l'état actif (compatible avec la colonne status = 'active' ou is_active = True)
+
+            # Vérification de l'état actif
             is_active = tenant.get("status") == "active" if "status" in tenant else tenant.get("is_active", True)
             if not is_active:
                 logger.warning(f"⚠️ La boutique [{tenant.get('name') or tenant.get('store_name')}] est désactivée.")
                 return None
 
-            # S'assurer que le tenant possède son UUID interne sous la clé tenant_id
+            # Injection des clés alias pour la compatibilité du reste de l'application
             tenant["tenant_id"] = tenant.get("id")
+            tenant["store_id"] = tenant.get("name") or tenant.get("store_id")
+            tenant["sheets_id"] = tenant.get("google_sheet_id") or tenant.get("sheets_id")
 
             # 3. Mise en cache
             cls._tenant_cache[clean_phone_id] = (time.time(), tenant)
@@ -106,30 +111,42 @@ class TenantManager:
     @classmethod
     def add_or_update_tenant(
         cls,
-        whatsapp_phone_number_id: str,
-        name: str,
+        phone_number_id: str = None,
+        whatsapp_phone_number_id: str = None,
+        store_id: str = None,
+        name: str = None,
         vendor_phone: str = None,
+        sheets_id: str = None,
         google_sheet_id: str = None,
         whatsapp_access_token: str = None,
         system_prompt: str = "",
         status: str = "active",
         vendor_email: str = None,
         ai_config: dict = None,
+        **kwargs,
     ):
-        """Ajoute ou met à jour une boutique dans Supabase et invalide son cache."""
+        """Ajoute ou met à jour une boutique dans Supabase et invalide son cache.
+        Accepte les alias de paramètres pour rétrocompatibilité (phone_number_id/whatsapp_phone_number_id, store_id/name, sheets_id/google_sheet_id).
+        """
         if not supabase:
             return False
 
-        clean_phone_id = str(whatsapp_phone_number_id).strip()
-        clean_name = name.strip()
-        
+        # Résolution flexible des arguments
+        final_phone_id = (phone_number_id or whatsapp_phone_number_id or "").strip()
+        final_name = (store_id or name or "").strip()
+        final_sheet_id = (sheets_id or google_sheet_id or "").strip()
+
+        if not final_phone_id or not final_name:
+            logger.error("❌ Impossible de sauvegarder le tenant : ID WhatsApp ou Nom de boutique manquant.")
+            return False
+
         clean_vendor = None
         if vendor_phone:
             clean_vendor = str(vendor_phone).strip().replace("+", "").replace(" ", "")
 
         default_prompt = (
             system_prompt.strip()
-            or f"Tu es l'assistant commercial virtuel de la boutique {clean_name}. "
+            or f"Tu es l'assistant commercial virtuel de la boutique {final_name}. "
                f"Sois poli, efficace, et aide les clients à trouver des produits et passer commande."
         )
 
@@ -138,8 +155,8 @@ class TenantManager:
             config_payload["system_prompt"] = default_prompt
 
         payload = {
-            "whatsapp_phone_number_id": clean_phone_id,
-            "name": clean_name,
+            "whatsapp_phone_number_id": final_phone_id,
+            "name": final_name,
             "status": status,
             "system_prompt": default_prompt,
             "ai_config": config_payload,
@@ -148,8 +165,8 @@ class TenantManager:
 
         if clean_vendor:
             payload["vendor_phone"] = clean_vendor
-        if google_sheet_id:
-            payload["google_sheet_id"] = google_sheet_id.strip()
+        if final_sheet_id:
+            payload["google_sheet_id"] = final_sheet_id
         if whatsapp_access_token:
             payload["whatsapp_access_token"] = whatsapp_access_token.strip()
         if vendor_email and vendor_email.strip():
@@ -163,9 +180,9 @@ class TenantManager:
             )
             if res.data:
                 # Invalidation automatique du cache après mise à jour
-                cls.invalidate_cache(clean_phone_id)
+                cls.invalidate_cache(final_phone_id)
                 return True
             return False
         except Exception as e:
-            logger.error(f"❌ Erreur lors de l'upsert de la boutique {clean_name} : {e}")
+            logger.error(f"❌ Erreur lors de l'upsert de la boutique {final_name} : {e}")
             return False

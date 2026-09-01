@@ -2,13 +2,26 @@ import os
 import functools
 import hmac
 import secrets
-from flask import Blueprint, render_template, request, redirect, url_for, flash, Response, current_app, session, abort
+import logging
+from flask import (
+    Blueprint,
+    render_template,
+    request,
+    redirect,
+    url_for,
+    flash,
+    Response,
+    current_app,
+    session,
+    abort,
+)
 from app.core.tenant_manager import TenantManager
 from app.core import database
 from app.services.sheets_service import SheetsService
 from app.services.orders_service import OrdersService
 
 admin_bp = Blueprint("admin", __name__)
+logger = logging.getLogger(__name__)
 
 
 def admin_required(f):
@@ -18,13 +31,19 @@ def admin_required(f):
         expected_user = current_app.config.get("ADMIN_USERNAME", "admin")
         expected_pass = current_app.config.get("ADMIN_PASSWORD")
 
-        if not expected_pass or not auth or auth.username != expected_user or auth.password != expected_pass:
+        if (
+            not expected_pass
+            or not auth
+            or auth.username != expected_user
+            or auth.password != expected_pass
+        ):
             return Response(
                 "Accès refusé. Veuillez fournir des identifiants valides.",
                 401,
-                {"WWW-Authenticate": 'Basic realm="Accès Administration"'}
+                {"WWW-Authenticate": 'Basic realm="Accès Administration"'},
             )
         return f(*args, **kwargs)
+
     return decorated
 
 
@@ -50,27 +69,46 @@ def add_tenant():
     store_id = request.form.get("store_id")
     phone_number_id = request.form.get("phone_number_id")
     vendor_phone = request.form.get("vendor_phone")
-    vendor_email = request.form.get("vendor_email", "")
+    vendor_email = request.form.get("vendor_email", "").strip()
     sheets_id = request.form.get("sheets_id", "").strip()
-    system_prompt = request.form.get("system_prompt")
+    system_prompt = request.form.get("system_prompt", "")
 
     if not phone_number_id or not vendor_phone or not store_id:
-        flash("Les champs Store ID, Phone Number ID et Numéro Vendeur sont obligatoires.", "error")
+        flash(
+            "Les champs Store ID, Phone Number ID et Numéro Vendeur sont obligatoires.",
+            "error",
+        )
         return redirect(url_for("admin.dashboard"))
 
-    # --- Onboarding automatique via OAuth2 (whatsautoia@gmail.com) ---
+    # 1. TENTATIVE DE CRÉATION DU GOOGLE SHEET (Optionnelle / Non-bloquante)
     if not sheets_id:
-        sheets_id = SheetsService.create_store_sheet(store_id, vendor_email=vendor_email)
-        if not sheets_id:
-            flash(
-                "❌ Échec de la création automatique du Google Sheet. "
-                "Vérifiez vos variables d'environnement OAuth2 sur Render (GOOGLE_CLIENT_ID, GOOGLE_REFRESH_TOKEN, etc.) "
-                "ou consultez les logs de l'application.",
-                "error",
+        try:
+            sheets_id = SheetsService.create_store_sheet(
+                store_id, vendor_email=vendor_email
             )
-            return redirect(url_for("admin.dashboard"))
-        flash(f"✅ Google Sheet créé automatiquement avec succès pour '{store_id}'.", "success")
+            if sheets_id:
+                flash(
+                    f"✅ Google Sheet créé automatiquement avec succès pour '{store_id}'.",
+                    "success",
+                )
+            else:
+                flash(
+                    "⚠️ La création automatique du Google Sheet a échoué. "
+                    "La boutique a tout de même été créée sur Supabase. "
+                    "Vous pourrez associer un ID Google Sheet ultérieurement.",
+                    "warning",
+                )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Erreur non-bloquante lors de la création Google Sheets : {e}"
+            )
+            flash(
+                "⚠️ Erreur lors de la configuration Google Sheets (OAuth2/Drive). La boutique est active sans Sheet.",
+                "warning",
+            )
+            sheets_id = None
 
+    # 2. ENREGISTREMENT EN BASE DE DONNÉES SUPABASE (Prioritaire)
     success = TenantManager.add_or_update_tenant(
         phone_number_id=phone_number_id,
         store_id=store_id,
@@ -83,7 +121,7 @@ def add_tenant():
     if success:
         flash(f"Boutique '{store_id}' enregistrée avec succès !", "success")
     else:
-        flash("Une erreur est survenue lors de l'enregistrement.", "error")
+        flash("Une erreur est survenue lors de l'enregistrement dans la base de données.", "error")
 
     return redirect(url_for("admin.dashboard"))
 
@@ -93,7 +131,7 @@ def add_tenant():
 def store_dashboard(phone_number_id):
     """Dashboard V1 d'une boutique précise : commandes, stock, conversations,
     statistiques. Vue opérationnelle, distincte du panneau de configuration
-    multi-tenant ci-dessus."""
+    multi-tenant."""
     tenant = TenantManager.get_tenant_by_phone_id(phone_number_id)
     if not tenant:
         flash("Boutique introuvable.", "error")
