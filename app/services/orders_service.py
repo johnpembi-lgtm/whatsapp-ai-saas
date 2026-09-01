@@ -2,11 +2,18 @@ import datetime
 import json
 import os
 import re
+import logging
 from flask import current_app
 from groq import Groq
 from app.services.sheets_service import SheetsService
 from app.services.whatsapp_service import WhatsAppService
 from app.services.cart_service import CartService
+
+logger = logging.getLogger(__name__)
+
+# Modèles recommandés Groq post-dépréciation 2026
+PRIMARY_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+FALLBACK_MODEL = "openai/gpt-oss-120b"
 
 
 class OrdersService:
@@ -27,7 +34,7 @@ class OrdersService:
             records = sheet.get_all_records()
             return list(reversed(records))[:limit]
         except Exception as e:
-            print(f"⚠️ Aucune commande disponible pour l'affichage dashboard : {e}")
+            logger.warning(f"⚠️ Aucune commande disponible pour l'affichage dashboard : {e}")
             return []
 
     @staticmethod
@@ -55,7 +62,7 @@ class OrdersService:
         """Interroge Groq pour extraire les données structurées de la commande au format JSON."""
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            print("⚠️ Clé API GROQ_API_KEY manquante dans l'environnement.")
+            logger.warning("⚠️ Clé API GROQ_API_KEY manquante dans l'environnement.")
             return {"is_order_completed": False}
 
         client = Groq(api_key=api_key)
@@ -92,22 +99,23 @@ class OrdersService:
         }}
         """
 
-        try:
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt_extraction}],
-                temperature=0.0,
-                response_format={"type": "json_object"},
-            )
+        messages = [{"role": "user", "content": prompt_extraction}]
 
-            raw_content = response.choices[0].message.content.strip()
-            return json.loads(raw_content)
+        # Tentative avec le modèle principal, puis fallback en cas d'erreur
+        for model_name in [PRIMARY_MODEL, FALLBACK_MODEL]:
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                )
+                raw_content = response.choices[0].message.content.strip()
+                return json.loads(raw_content)
+            except Exception as e:
+                logger.warning(f"⚠️ Échec d'extraction avec le modèle {model_name} : {e}")
 
-        except Exception as e:
-            print(
-                f"⚠️ Erreur lors de l'extraction de la commande via Groq : {e}"
-            )
-
+        logger.error("❌ Échec complet d'extraction de commande après tentatives sur tous les modèles Groq.")
         return {"is_order_completed": False}
 
     @staticmethod
@@ -150,14 +158,14 @@ class OrdersService:
             success = SheetsService.append_order(sheets_id, row_data)
 
             if success:
-                print(
+                logger.info(
                     f"📦 [COMMANDE ENREGISTRÉE] Client: {client_name} | Total: {total} DH"
                 )
 
                 # --- AJOUT CRITIQUE POUR LA RELANCE ---
                 # Désactiver immédiatement la relance automatique car la commande est validée
                 CartService.mark_as_completed(phone_number_id, sender_phone)
-                print(f"🔒 Relance désactivée pour le client +{sender_phone}.")
+                logger.info(f"🔒 Relance désactivée pour le client +{sender_phone}.")
 
                 # 2. Récupération explicite du token d'accès WhatsApp
                 access_token = (
@@ -186,14 +194,14 @@ class OrdersService:
                             message_text=vendor_message,
                             access_token=access_token,
                         )
-                        print(
+                        logger.info(
                             f"📲 Notification WhatsApp envoyée au vendeur ({vendor_phone})"
                         )
                     except Exception as e:
-                        print(
+                        logger.error(
                             f"❌ Erreur lors de l'envoi de la notification au vendeur : {e}"
                         )
                 else:
-                    print(
+                    logger.error(
                         f"❌ Échec envoi vendeur : vendor_phone ({vendor_phone}) ou access_token absent dans le tenant."
                     )
