@@ -1,29 +1,41 @@
 import json
 import os
+import logging
 from groq import Groq
 import httpx
+
+logger = logging.getLogger(__name__)
+
+# Modèles recommandés Groq
+PRIMARY_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+FALLBACK_MODEL = "llama-3.3-70b-versatile"
 
 
 class AIService:
 
     @staticmethod
+    def _get_client():
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            logger.error("❌ Erreur AIService : GROQ_API_KEY manquant dans .env")
+            return None
+        try:
+            http_client = httpx.Client(timeout=15.0)
+            return Groq(api_key=api_key, http_client=http_client)
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'initialisation du client Groq : {e}")
+            return None
+
+    @classmethod
     def generate_response(
-        system_prompt, catalog, user_message, history=None
+        cls, system_prompt, catalog, user_message, history=None
     ):
         if history is None:
             history = []
 
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            print("❌ Erreur AIService : GROQ_API_KEY manquant dans .env")
+        client = cls._get_client()
+        if not client:
             return "Désolé, le service IA est indisponible pour le moment."
-
-        try:
-            http_client = httpx.Client(timeout=15.0)
-            client = Groq(api_key=api_key, http_client=http_client)
-        except Exception as e:
-            print(f"❌ Erreur lors de l'initialisation du client Groq : {e}")
-            return "Désolé, le service IA rencontre un problème de configuration."
 
         # 1. Mise en forme propre et claire du catalogue
         catalog_text = ""
@@ -57,7 +69,7 @@ class AIService:
         else:
             catalog_text = str(catalog)
 
-        # 2. Directives Système Optimisées pour l'Expérience Client (CX)
+        # 2. Directives Système
         system_instruction = f"""{system_prompt}
 
 CATALOGUE DISPONIBLE EN BOUTIQUE :
@@ -104,30 +116,61 @@ RÈGLES DU PARCOURS CLIENT :
 
         messages = [{"role": "system", "content": system_instruction}]
 
-        # 3. Injection de l'historique
         for msg in history:
             role = "assistant" if msg.get("role") == "assistant" else "user"
             messages.append({"role": role, "content": msg.get("content", "")})
 
-        # 4. Message courant
         messages.append({"role": "user", "content": user_message})
 
+        # Appel avec fallback modèle
         try:
-            response = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=messages,
-                temperature=0.2,
-                max_tokens=300,
-            )
-
-            res_content = response.choices[0].message.content.strip()
-
-            # Nettoyage des doublons de monnaie
-            while "DH DH" in res_content:
-                res_content = res_content.replace("DH DH", "DH")
-
-            return res_content
-
+            return cls._call_groq_api(client, PRIMARY_MODEL, messages, max_tokens=300, temperature=0.2)
         except Exception as e:
-            print(f"❌ Erreur Groq AIService : {e}")
-            return "Désolé, je rencontre des difficultés pour répondre."
+            logger.warning(f"⚠️ Échec du modèle principal ({PRIMARY_MODEL}): {e}. Tentative avec {FALLBACK_MODEL}...")
+            try:
+                return cls._call_groq_api(client, FALLBACK_MODEL, messages, max_tokens=300, temperature=0.2)
+            except Exception as err:
+                logger.error(f"❌ Erreur critique Groq AIService : {err}")
+                return "Désolé, je rencontre des difficultés pour répondre."
+
+    @classmethod
+    def extract_order(cls, history_text: str):
+        """Extrait la commande au format JSON à partir de l'historique (résout les erreurs 404 Groq)."""
+        client = cls._get_client()
+        if not client:
+            return None
+
+        prompt = (
+            "Analyse cette conversation WhatsApp et extrait la commande au format JSON strict avec les clés : "
+            "'client_name', 'client_address', 'items' (liste d'objets avec 'name', 'quantity', 'price'), "
+            "'total_amount', 'delivery_type'. Si aucune commande complète n'est trouvée, retourne un objet vide {}.\n\n"
+            f"CONVERSATION :\n{history_text}"
+        )
+
+        messages = [{"role": "system", "content": "Tu es un extracteur de données JSON strict."},
+                    {"role": "user", "content": prompt}]
+
+        try:
+            raw_res = cls._call_groq_api(client, PRIMARY_MODEL, messages, max_tokens=500, temperature=0.0)
+            return json.loads(raw_res)
+        except Exception as e:
+            logger.warning(f"⚠️ Échec extraction avec {PRIMARY_MODEL}, tentative fallback...")
+            try:
+                raw_res = cls._call_groq_api(client, FALLBACK_MODEL, messages, max_tokens=500, temperature=0.0)
+                return json.loads(raw_res)
+            except Exception as err:
+                logger.error(f"❌ Erreur lors de l'extraction de la commande via Groq : {err}")
+                return None
+
+    @staticmethod
+    def _call_groq_api(client, model, messages, max_tokens=300, temperature=0.2):
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        res_content = response.choices[0].message.content.strip()
+        while "DH DH" in res_content:
+            res_content = res_content.replace("DH DH", "DH")
+        return res_content
