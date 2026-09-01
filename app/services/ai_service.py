@@ -6,9 +6,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Identifiants officiels et stables de Groq
-PRIMARY_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
-FALLBACK_MODEL = "llama3-70b-8192"
+# Modèles actifs 2026 post-dépréciation Groq
+PRIMARY_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+FALLBACK_MODEL = "openai/gpt-oss-120b"
 
 
 class AIService:
@@ -100,7 +100,7 @@ RÈGLES DU PARCOURS CLIENT :
    - Si le client donne son adresse mais pas son nom, demande-lui poliment son nom complet.
 
 4. RÉCAPITULATIF ET CHOIX DU MODE DE LIVRAISON :
-   - Dès que tu as LE NOM ET L'ADRESSE (or la ville), fais un récapitulatif clair :
+   - Dès que tu as LE NOM ET L'ADRESSE (ou la ville), fais un récapitulatif clair :
      * Articles + Quantités
      * Calcul exact du total (Quantité × Prix) en DH
      * Nom du destinataire et Adresse
@@ -122,7 +122,6 @@ RÈGLES DU PARCOURS CLIENT :
 
         messages.append({"role": "user", "content": user_message})
 
-        # Appel avec tentative modèle principal puis fallback
         try:
             return cls._call_groq_api(client, PRIMARY_MODEL, messages, max_tokens=300, temperature=0.2)
         except Exception as e:
