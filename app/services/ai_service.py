@@ -6,9 +6,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Modèles recommandés Groq
-PRIMARY_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-FALLBACK_MODEL = "llama-3.3-70b-versatile"
+# Identifiants officiels et stables de Groq
+PRIMARY_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+FALLBACK_MODEL = "llama3-70b-8192"
 
 
 class AIService:
@@ -37,7 +37,7 @@ class AIService:
         if not client:
             return "Désolé, le service IA est indisponible pour le moment."
 
-        # 1. Mise en forme propre et claire du catalogue
+        # 1. Mise en forme du catalogue
         catalog_text = ""
         if isinstance(catalog, list):
             for item in catalog:
@@ -100,7 +100,7 @@ RÈGLES DU PARCOURS CLIENT :
    - Si le client donne son adresse mais pas son nom, demande-lui poliment son nom complet.
 
 4. RÉCAPITULATIF ET CHOIX DU MODE DE LIVRAISON :
-   - Dès que tu as LE NOM ET L'ADRESSE (ou la ville), fais un récapitulatif clair :
+   - Dès que tu as LE NOM ET L'ADRESSE (or la ville), fais un récapitulatif clair :
      * Articles + Quantités
      * Calcul exact du total (Quantité × Prix) en DH
      * Nom du destinataire et Adresse
@@ -122,7 +122,7 @@ RÈGLES DU PARCOURS CLIENT :
 
         messages.append({"role": "user", "content": user_message})
 
-        # Appel avec fallback modèle
+        # Appel avec tentative modèle principal puis fallback
         try:
             return cls._call_groq_api(client, PRIMARY_MODEL, messages, max_tokens=300, temperature=0.2)
         except Exception as e:
@@ -135,7 +135,6 @@ RÈGLES DU PARCOURS CLIENT :
 
     @classmethod
     def extract_order(cls, history_text: str):
-        """Extrait la commande au format JSON à partir de l'historique (résout les erreurs 404 Groq)."""
         client = cls._get_client()
         if not client:
             return None
@@ -147,8 +146,10 @@ RÈGLES DU PARCOURS CLIENT :
             f"CONVERSATION :\n{history_text}"
         )
 
-        messages = [{"role": "system", "content": "Tu es un extracteur de données JSON strict."},
-                    {"role": "user", "content": prompt}]
+        messages = [
+            {"role": "system", "content": "Tu es un extracteur de données JSON strict."},
+            {"role": "user", "content": prompt}
+        ]
 
         try:
             raw_res = cls._call_groq_api(client, PRIMARY_MODEL, messages, max_tokens=500, temperature=0.0)
