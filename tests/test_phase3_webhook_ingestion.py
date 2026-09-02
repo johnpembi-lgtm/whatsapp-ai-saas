@@ -2,17 +2,21 @@ import pytest
 import uuid
 from unittest.mock import patch
 from app import create_app
+from config import Config
 
-# 1. Instanciation unique de l'application Flask pour toute la session de test
+
+class TestConfig(Config):
+    TESTING = True
+    WEBHOOK_VERIFY_TOKEN = "test_verify_token"
+    APP_SECRET = "test_app_secret"
+
+
 @pytest.fixture(scope="session")
 def app_instance():
-    app = create_app()
-    app.config["TESTING"] = True
-    app.config["WEBHOOK_VERIFY_TOKEN"] = "test_verify_token"
-    app.config["APP_SECRET"] = "test_app_secret"
+    app = create_app(TestConfig)
     return app
 
-# 2. Fixture fournissant le client de test Flask
+
 @pytest.fixture
 def webhook_client(app_instance):
     return app_instance.test_client()
@@ -48,10 +52,8 @@ def test_post_webhook_success_and_idempotency(
 ):
     """Vérifie l'ingestion d'un message puis son rejet immédiat s'il est dupliqué."""
     msg_id = f"wam_test_{uuid.uuid4().hex}"
-    
+
     mock_get_tenant.return_value = {"id": "tenant_123", "tenant_id": "tenant_123"}
-    
-    # Premier appel -> Pas un doublon (is_duplicate = False)
     mock_dedup.return_value = (False, "registered")
 
     payload = {
@@ -84,6 +86,5 @@ def test_post_webhook_success_and_idempotency(
     res2 = webhook_client.post("/webhook", json=payload)
     assert res2.status_code == 200
     assert res2.get_json() == {"status": "success"}
-    
-    # L'exécuteur ne doit pas avoir été appelé une seconde fois
+
     assert mock_executor.call_count == 1

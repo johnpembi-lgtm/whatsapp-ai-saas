@@ -3,11 +3,14 @@ import io
 import json
 import os
 import time
+import logging
 import gspread
 import requests
 from google.oauth2.credentials import Credentials
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.auth.transport.requests import Request
+
+logger = logging.getLogger(__name__)
 
 
 class SheetsService:
@@ -50,7 +53,7 @@ class SheetsService:
                     creds.refresh(Request())
                 return creds
             except Exception as e:
-                print(f"⚠️ Échec de l'authentification OAuth2 Utilisateur : {e}")
+                logger.warning(f"⚠️ Échec de l'authentification OAuth2 Utilisateur : {e}")
 
         # --- 2. Service Account ---
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,7 +65,7 @@ class SheetsService:
                     creds_path, scopes=scopes
                 )
             except Exception as e:
-                print(f"❌ Erreur lors du chargement de {creds_path} : {e}")
+                logger.error(f"❌ Erreur lors du chargement de {creds_path} : {e}")
 
         creds_env = os.getenv("GOOGLE_CREDENTIALS_JSON")
         if creds_env:
@@ -72,7 +75,7 @@ class SheetsService:
                     creds_dict, scopes=scopes
                 )
             except Exception as e:
-                print(f"❌ Erreur lors du parsing de GOOGLE_CREDENTIALS_JSON : {e}")
+                logger.error(f"❌ Erreur lors du parsing de GOOGLE_CREDENTIALS_JSON : {e}")
 
         return None
 
@@ -84,9 +87,9 @@ class SheetsService:
             try:
                 return gspread.authorize(creds)
             except Exception as e:
-                print(f"❌ Erreur lors de l'autorisation gspread : {e}")
+                logger.error(f"❌ Erreur lors de l'autorisation gspread : {e}")
 
-        print("❌ Aucune méthode d'authentification Google valide trouvée.")
+        logger.warning("❌ Aucune méthode d'authentification Google valide trouvée.")
         return None
 
     @staticmethod
@@ -126,13 +129,13 @@ class SheetsService:
                 catalog_sheet.append_row(SheetsService.HEADERS)
                 if aligned_rows:
                     catalog_sheet.append_rows(aligned_rows)
-                print(f"✅ Données migrées de '{legacy_sheet.title}' vers 'Catalogue'.")
+                logger.info(f"✅ Données migrées de '{legacy_sheet.title}' vers 'Catalogue'.")
 
             try:
                 spreadsheet.del_worksheet(legacy_sheet)
-                print(f"🗑️ Onglet obsolète '{legacy_sheet.title}' supprimé.")
+                logger.info(f"🗑️ Onglet obsolète '{legacy_sheet.title}' supprimé.")
             except Exception as e:
-                print(f"⚠️ Erreur suppression onglet '{legacy_sheet.title}' : {e}")
+                logger.warning(f"⚠️ Erreur suppression onglet '{legacy_sheet.title}' : {e}")
 
         return catalog_sheet
 
@@ -145,7 +148,7 @@ class SheetsService:
     def fetch_catalog(sheets_id):
         """Récupère le catalogue de produits depuis Google Sheets (avec cache de 5 min)."""
         if not sheets_id or sheets_id == "ID_DU_GOOGLE_SHEETS_CLIENT":
-            print("⚠️ Aucun ID Google Sheets valide configuré pour ce tenant.")
+            logger.info("⚠️ Aucun ID Google Sheets valide configuré pour ce tenant.")
             return []
 
         cached = SheetsService._catalog_cache.get(sheets_id)
@@ -168,7 +171,6 @@ class SheetsService:
                     for k, v in row.items()
                     if k
                 }
-                # Ne conserve que les lignes qui possèdent au moins un Nom
                 if normalized_row.get("nom"):
                     products.append(normalized_row)
 
@@ -176,12 +178,16 @@ class SheetsService:
             return products
 
         except Exception as e:
-            print(f"❌ Erreur récupération catalogue Sheets : {str(e)}")
+            logger.error(f"❌ Erreur récupération catalogue Sheets : {str(e)}")
             return []
 
     @staticmethod
     def append_order(sheets_id, row_data):
-        """Ajoute une commande dans l'onglet 'Commandes'."""
+        """Ajoute une commande dans l'onglet 'Commandes' (Soft Fail, non-bloquant)."""
+        if not sheets_id:
+            logger.info("ℹ️ Pas d'ID Google Sheets renseigné. Synchronisation ignorée.")
+            return False
+
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -206,19 +212,20 @@ class SheetsService:
                 sheet.append_row(headers)
 
             sheet.append_row(row_data)
+            logger.info(f"📊 Commande synchronisée sur Google Sheets ({sheets_id})")
             return True
 
         except Exception as e:
-            print(f"❌ Erreur écriture commande Sheets : {repr(e)}")
+            logger.error(f"❌ Erreur écriture commande Sheets (non-bloquant) : {repr(e)}")
             return False
 
     @staticmethod
     def create_store_sheet(store_name, vendor_email=None):
-        """Crée et configure un Google Sheet pour une nouvelle boutique."""
+        """Crée et configure un Google Sheet pour une nouvelle boutique (Isolement des erreurs)."""
         try:
             creds = SheetsService._get_google_credentials()
             if not creds:
-                print("❌ Credentials Google introuvables.")
+                logger.error("❌ Credentials Google introuvables.")
                 return None
 
             if not creds.valid:
@@ -245,14 +252,15 @@ class SheetsService:
                     sheet_id = res.json().get("id")
                     spreadsheet = client.open_by_key(sheet_id)
                 else:
-                    print(f"⚠️ Copie du modèle impossible ({res.status_code}). Tentative de création standard...")
+                    logger.warning(
+                        f"⚠️ Copie du modèle impossible ({res.status_code}). Création standard..."
+                    )
 
-            # 2. Création directe si nécessaire
+            # 2. Création directe si modèle indisponible
             if not spreadsheet:
                 spreadsheet = client.create(title)
                 if folder_id:
                     try:
-                        # Déplacement dans le dossier Drive via gspread / Drive API
                         client.insert_file(spreadsheet.id, folder_id=folder_id)
                     except Exception:
                         pass
@@ -285,20 +293,23 @@ class SheetsService:
                 if clean_email and clean_email != "whatsautoia@gmail.com":
                     try:
                         spreadsheet.share(clean_email, perm_type="user", role="writer")
-                        print(f"📧 Sheet partagé avec succès à : {clean_email}")
+                        logger.info(f"📧 Sheet partagé avec succès à : {clean_email}")
                     except Exception as e:
-                        print(f"⚠️ Échec du partage avec {clean_email} : {e}")
+                        logger.warning(f"⚠️ Échec du partage avec {clean_email} : {e}")
 
-            print(f"✅ Google Sheet configuré avec succès pour '{store_name}' (ID: {spreadsheet.id})")
+            logger.info(f"✅ Google Sheet configuré pour '{store_name}' (ID: {spreadsheet.id})")
             return spreadsheet.id
 
         except Exception as e:
-            print(f"❌ Erreur création Sheet '{store_name}' : {repr(e)}")
+            logger.error(f"❌ Erreur lors de la création du Sheet '{store_name}' : {repr(e)}")
             return None
 
     @staticmethod
     def update_stock(sheets_id, product_name, quantity_ordered):
         """Déduit la quantité commandée du stock d'un produit."""
+        if not sheets_id:
+            return False
+
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -313,22 +324,26 @@ class SheetsService:
                 if name_in_sheet == product_name.strip().lower():
                     current_stock = int(row.get("stock", 0))
                     new_stock = max(0, current_stock - int(quantity_ordered))
-                    
-                    # Mise à jour de la cellule de stock (colonne D = 4)
+
                     sheet.update_cell(idx, 4, new_stock)
                     SheetsService.invalidate_catalog_cache(sheets_id)
-                    print(f"📉 Stock mis à jour pour '{product_name}' : {current_stock} -> {new_stock}")
+                    logger.info(
+                        f"📉 Stock mis à jour pour '{product_name}' : {current_stock} -> {new_stock}"
+                    )
                     return True
 
             return False
 
         except Exception as e:
-            print(f"❌ Erreur mise à jour stock : {repr(e)}")
+            logger.error(f"❌ Erreur mise à jour stock : {repr(e)}")
             return False
 
     @staticmethod
     def add_or_update_product(sheets_id, product_name, description, price, stock, image_url):
         """Ajoute ou met à jour un produit en réécrivant la ligne A:E."""
+        if not sheets_id:
+            return False
+
         try:
             client = SheetsService.get_gspread_client()
             if not client:
@@ -343,17 +358,16 @@ class SheetsService:
             for idx, row in enumerate(records, start=2):
                 if str(row.get("nom", "")).strip().lower() == product_name.strip().lower():
                     cell_range = f"A{idx}:E{idx}"
-                    # Compatibilité gspread v6+
                     sheet.update(range_name=cell_range, values=[row_data])
                     SheetsService.invalidate_catalog_cache(sheets_id)
-                    print(f"✅ Produit '{product_name}' mis à jour !")
+                    logger.info(f"✅ Produit '{product_name}' mis à jour !")
                     return True
 
             sheet.append_row(row_data)
             SheetsService.invalidate_catalog_cache(sheets_id)
-            print(f"✅ Produit '{product_name}' ajouté !")
+            logger.info(f"✅ Produit '{product_name}' ajouté !")
             return True
 
         except Exception as e:
-            print(f"❌ Erreur mise à jour produit : {repr(e)}")
+            logger.error(f"❌ Erreur mise à jour produit : {repr(e)}")
             return False

@@ -17,23 +17,25 @@ def create_app(config_class=Config):
 
     app.json.ensure_ascii = False
 
-    scheduler.init_app(app)
+    # Desactiver le scheduler pendant l'exécution des tests
+    if not app.config.get("TESTING"):
+        scheduler.init_app(app)
 
-    if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        from app.services.retargeting_service import RetargetingService
+        if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+            from app.services.retargeting_service import RetargetingService
 
-        if not scheduler.get_job("retargeting_job"):
-            scheduler.add_job(
-                id="retargeting_job",
-                func=RetargetingService.process_abandoned_carts,
-                trigger="interval",
-                minutes=15,
-                max_instances=1,
-                coalesce=True,
-            )
+            if not scheduler.get_job("retargeting_job"):
+                scheduler.add_job(
+                    id="retargeting_job",
+                    func=RetargetingService.process_abandoned_carts,
+                    trigger="interval",
+                    minutes=15,
+                    max_instances=1,
+                    coalesce=True,
+                )
 
-        if not scheduler.running:
-            scheduler.start()
+            if not scheduler.running:
+                scheduler.start()
 
     from app.routes.admin_routes import admin_bp
     from app.routes.webhook_routes import webhook_bp
@@ -50,6 +52,6 @@ def create_app(config_class=Config):
 
     @app.route("/", methods=["GET"])
     def home():
-        return {"status": "ok", "service": "Pemby Backend"}, 200
+        return {"status": "ok", "service": "PEMBI Backend"}, 200
 
     return app
