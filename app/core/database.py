@@ -1,98 +1,241 @@
 import os
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Charger les variables du fichier .env
-load_dotenv()
+# Chargement sécurisé du fichier .env
+env_path = Path(__file__).resolve().parent / ".env"
+if not env_path.exists():
+    env_path = Path(__file__).resolve().parent.parent / ".env"
 
-# Nettoyage automatique de l'URL
-raw_url = os.getenv("SUPABASE_URL", "")
-SUPABASE_URL = raw_url.split("/rest/v1")[0].rstrip("/")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+load_dotenv(dotenv_path=env_path, override=True)
 
-# Initialisation du client Supabase
+logger = logging.getLogger(__name__)
+
+raw_url = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_URL = raw_url.split("/rest/v1")[0].rstrip("/") if raw_url else ""
+
+# -----------------------------------------------------------------------------
+# SÉPARATION ACCÈS BACKEND (SERVICE_ROLE) vs CLIENT (ANON)
+# -----------------------------------------------------------------------------
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_KEY", "").strip() or os.getenv("SUPABASE_ANON_KEY", "").strip()
+
+# Le client backend/admin principal utilise STRICTEMENT la service_role_key pour contourner RLS
 supabase_db: Client = None
 
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase_db = create_client(SUPABASE_URL, SUPABASE_KEY)
+if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    try:
+        supabase_db = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        logger.info("✅ Client Supabase Admin (Service Role) initialisé avec succès.")
+    except Exception as e:
+        logger.error(f"❌ Échec de la connexion Admin Supabase : {e}")
+        supabase_db = None
+elif SUPABASE_URL and SUPABASE_ANON_KEY:
+    try:
+        supabase_db = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        logger.warning("⚠️ Client Supabase initialisé avec ANON_KEY (Sujet aux restrictions RLS).")
+    except Exception as e:
+        logger.error(f"❌ Échec de la connexion Supabase : {e}")
+        supabase_db = None
 else:
-    print("⚠️ Supabase non configuré dans app/core/database.py")
+    logger.error("❌ Variables SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY manquantes.")
+
+
+def get_anon_supabase_client() -> Client:
+    """Retourne un client de test soumis aux règles RLS (via Anon Key)."""
+    if SUPABASE_URL and SUPABASE_ANON_KEY:
+        return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    raise ValueError("SUPABASE_URL ou SUPABASE_ANON_KEY non configurée.")
 
 
 def init_db():
-    """
-    Laissé pour compatibilité avec le démarrage de l'application.
-    Les tables sont désormais gérées directement sur l'interface de Supabase.
-    """
+    """Compatibilité d'initialisation."""
     pass
 
 
 # ==========================================
-# GESTION DES MESSAGES / HISTORIQUE
+# UTILITAIRES DE RÉSOLUTIONS DES IDS CANONIQUES
 # ==========================================
 
-def save_message(phone_number_id, user_phone, role, content):
-    """Enregistre un message (du client ou de l'IA) sur Supabase."""
+def _get_tenant_id(whatsapp_phone_number_id: str) -> str:
+    """Récupère l'UUID du tenant à partir de son whatsapp_phone_number_id."""
+    if not supabase_db or not whatsapp_phone_number_id:
+        return None
+    try:
+        res = supabase_db.table("tenants") \
+            .select("id") \
+            .eq("whatsapp_phone_number_id", str(whatsapp_phone_number_id).strip()) \
+            .execute()
+        if res.data:
+            return res.data[0]["id"]
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la récupération du tenant_id : {e}")
+    return None
+
+
+def _get_or_create_customer(tenant_id: str, phone: str) -> str:
+    """Récupère ou crée le client (table `customers`, colonne `phone`)."""
+    if not supabase_db or not tenant_id or not phone:
+        return None
+    clean_phone = str(phone).strip().replace("+", "").replace(" ", "")
+    try:
+        res = supabase_db.table("customers") \
+            .select("id") \
+            .eq("tenant_id", tenant_id) \
+            .eq("phone", clean_phone) \
+            .execute()
+        if res.data:
+            return res.data[0]["id"]
+
+        # Création canonique
+        ins = supabase_db.table("customers").insert({
+            "tenant_id": tenant_id,
+            "phone": clean_phone,
+            "full_name": clean_phone
+        }).execute()
+        if ins.data:
+            return ins.data[0]["id"]
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la résolution du customer_id : {e}")
+    return None
+
+
+def _get_or_create_conversation(tenant_id: str, customer_id: str) -> str:
+    """Récupère ou crée la conversation canonique pour un couple (tenant, customer)."""
+    if not supabase_db or not tenant_id or not customer_id:
+        return None
+    try:
+        res = supabase_db.table("conversations") \
+            .select("id") \
+            .eq("tenant_id", tenant_id) \
+            .eq("customer_id", customer_id) \
+            .execute()
+        if res.data:
+            return res.data[0]["id"]
+
+        ins = supabase_db.table("conversations").insert({
+            "tenant_id": tenant_id,
+            "customer_id": customer_id,
+            "status": "active"
+        }).execute()
+        if ins.data:
+            return ins.data[0]["id"]
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la résolution de la conversation : {e}")
+    return None
+
+
+# ==========================================
+# GESTION DES MESSAGES / HISTORIQUE CANONIQUE
+# ==========================================
+
+def save_message(whatsapp_phone_number_id, user_phone, role, content, wam_id=None):
+    """Enregistre un message dans la table canonique `messages`."""
     if not supabase_db:
         return
     try:
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return
+        customer_id = _get_or_create_customer(tenant_id, user_phone)
+        if not customer_id:
+            return
+        conversation_id = _get_or_create_conversation(tenant_id, customer_id)
+        if not conversation_id:
+            return
+
+        sender_type = "user" if role in ("user", "client") else "assistant"
+
         payload = {
-            "phone_number_id": str(phone_number_id),
-            "user_phone": str(user_phone),
-            "role": role,
+            "tenant_id": tenant_id,
+            "conversation_id": conversation_id,
+            "sender_type": sender_type,
             "content": content
         }
+        if wam_id:
+            payload["wam_id"] = str(wam_id)
+
         supabase_db.table("messages").insert(payload).execute()
+
+        supabase_db.table("conversations").update({
+            "last_interaction_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", conversation_id).execute()
+
     except Exception as e:
-        print(f"❌ Erreur lors de la sauvegarde du message sur Supabase : {e}")
+        logger.error(f"❌ Erreur lors de la sauvegarde du message sur Supabase : {e}")
 
 
-def get_conversation_history(phone_number_id, user_phone, limit=6):
-    """Récupère l'historique chronologique des conversations depuis Supabase."""
+def get_conversation_history(whatsapp_phone_number_id, user_phone, limit=6):
+    """Récupère l'historique chronologique des conversations."""
     if not supabase_db:
         return []
     try:
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return []
+        customer_id = _get_or_create_customer(tenant_id, user_phone)
+        if not customer_id:
+            return []
+        conversation_id = _get_or_create_conversation(tenant_id, customer_id)
+        if not conversation_id:
+            return []
+
         res = supabase_db.table("messages") \
-            .select("role, content") \
-            .eq("phone_number_id", str(phone_number_id)) \
-            .eq("user_phone", str(user_phone)) \
+            .select("sender_type, content, created_at") \
+            .eq("conversation_id", conversation_id) \
             .order("created_at", desc=True) \
             .limit(limit) \
             .execute()
-        
-        history = [{"role": row["role"], "content": row["content"]} for row in res.data]
+
+        history = [
+            {
+                "role": "user" if row["sender_type"] == "user" else "assistant",
+                "content": row["content"]
+            }
+            for row in res.data
+        ]
         history.reverse()
         return history
     except Exception as e:
-        print(f"❌ Erreur de récupération d'historique sur Supabase : {e}")
+        logger.error(f"❌ Erreur de récupération d'historique sur Supabase : {e}")
         return []
 
 
 # ==========================================
-# GESTION DU SUIVI DES PANIERS (RETARGETING)
+# GESTION DU SUIVI DES PANIERS CANONIQUES
 # ==========================================
 
-def update_cart_tracking(phone_number_id, customer_phone, last_product=None, status='pending'):
-    """Met à jour ou insère l'état du panier d'un client (Upsert)."""
+def update_cart_tracking(whatsapp_phone_number_id, customer_phone, last_product=None, status='pending'):
+    """Met à jour ou insère l'état du panier d'un client."""
     if not supabase_db:
         return
     try:
-        payload = {
-            "phone_number_id": str(phone_number_id),
-            "customer_phone": str(customer_phone),
-            "status": status,
-            "last_interaction": datetime.now(timezone.utc).isoformat()
-        }
-        if last_product:
-            payload["last_product"] = last_product
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return
+        customer_id = _get_or_create_customer(tenant_id, customer_phone)
+        if not customer_id:
+            return
 
-        supabase_db.table("cart_tracking").upsert(
-            payload, 
-            on_conflict="phone_number_id,customer_phone"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "tenant_id": tenant_id,
+            "customer_id": customer_id,
+            "status": status,
+            "last_interaction": now_iso,
+            "updated_at": now_iso
+        }
+
+        supabase_db.table("carts").upsert(
+            payload,
+            on_conflict="tenant_id,customer_id"
         ).execute()
+
     except Exception as e:
-        print(f"❌ Erreur lors de la mise à jour du panier sur Supabase : {e}")
+        logger.error(f"❌ Erreur lors de la mise à jour du panier sur Supabase : {e}")
 
 
 def get_pending_carts_for_retry(limit=10):
@@ -100,136 +243,174 @@ def get_pending_carts_for_retry(limit=10):
     if not supabase_db:
         return []
     try:
-        res = supabase_db.table("cart_tracking") \
-            .select("*") \
+        res = supabase_db.table("carts") \
+            .select("*, tenants(whatsapp_phone_number_id), customers(phone)") \
             .eq("status", "pending") \
             .limit(limit) \
             .execute()
-        return res.data
+
+        pending_carts = []
+        for row in res.data:
+            pending_carts.append({
+                "id": row["id"],
+                "tenant_id": row["tenant_id"],
+                "customer_id": row["customer_id"],
+                "whatsapp_phone_number_id": row.get("tenants", {}).get("whatsapp_phone_number_id"),
+                "customer_phone": row.get("customers", {}).get("phone"),
+                "status": row["status"],
+                "reminder_count": row.get("reminder_count", 0),
+                "last_interaction": row.get("last_interaction")
+            })
+        return pending_carts
     except Exception as e:
-        print(f"❌ Erreur lors de la récupération des paniers en attente : {e}")
+        logger.error(f"❌ Erreur lors de la récupération des paniers en attente : {e}")
         return []
 
 
 # ==========================================
-# GESTION DU MODE DE CONVERSATION (BOT_MODE / HUMAN_MODE)
+# GESTION DU MODE DE CONVERSATION (BOT / HUMAN)
 # ==========================================
 
-def get_conversation_mode(phone_number_id, customer_phone):
-    """Retourne 'bot' ou 'human' pour cette conversation précise. 'bot' par défaut
-    si aucune ligne n'existe encore (conversation jamais escaladée)."""
+def get_conversation_mode(whatsapp_phone_number_id, customer_phone):
     if not supabase_db:
         return "bot"
     try:
-        res = supabase_db.table("conversation_state") \
-            .select("mode") \
-            .eq("phone_number_id", str(phone_number_id)) \
-            .eq("customer_phone", str(customer_phone)) \
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return "bot"
+        customer_id = _get_or_create_customer(tenant_id, customer_phone)
+        if not customer_id:
+            return "bot"
+
+        res = supabase_db.table("conversations") \
+            .select("status") \
+            .eq("tenant_id", tenant_id) \
+            .eq("customer_id", customer_id) \
             .execute()
+
         if res.data:
-            return res.data[0]["mode"]
+            return "human" if res.data[0]["status"] == "handover" else "bot"
         return "bot"
     except Exception as e:
-        print(f"❌ Erreur lors de la lecture du mode de conversation : {e}")
+        logger.error(f"❌ Erreur lors de la lecture du mode de conversation : {e}")
         return "bot"
 
 
-def set_conversation_mode(phone_number_id, customer_phone, mode):
-    """Bascule une conversation précise en 'bot' ou 'human'."""
-    if not supabase_db:
-        return False
-    if mode not in ("bot", "human"):
+def set_conversation_mode(whatsapp_phone_number_id, customer_phone, mode):
+    if not supabase_db or mode not in ("bot", "human"):
         return False
     try:
-        supabase_db.table("conversation_state").upsert(
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return False
+        customer_id = _get_or_create_customer(tenant_id, customer_phone)
+        if not customer_id:
+            return False
+
+        status_value = "handover" if mode == "human" else "active"
+
+        supabase_db.table("conversations").upsert(
             {
-                "phone_number_id": str(phone_number_id),
-                "customer_phone": str(customer_phone),
-                "mode": mode,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "tenant_id": tenant_id,
+                "customer_id": customer_id,
+                "status": status_value,
+                "last_interaction_at": datetime.now(timezone.utc).isoformat(),
             },
-            on_conflict="phone_number_id,customer_phone",
+            on_conflict="tenant_id,customer_id",
         ).execute()
         return True
     except Exception as e:
-        print(f"❌ Erreur lors du changement de mode de conversation : {e}")
+        logger.error(f"❌ Erreur lors du changement de mode de conversation : {e}")
         return False
 
 
-def get_human_mode_conversations(phone_number_id):
-    """Liste les numéros clients actuellement en HUMAN_MODE pour cette boutique."""
+def get_human_mode_conversations(whatsapp_phone_number_id):
     if not supabase_db:
         return []
     try:
-        res = supabase_db.table("conversation_state") \
-            .select("customer_phone") \
-            .eq("phone_number_id", str(phone_number_id)) \
-            .eq("mode", "human") \
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return []
+
+        res = supabase_db.table("conversations") \
+            .select("customers(phone)") \
+            .eq("tenant_id", tenant_id) \
+            .eq("status", "handover") \
             .execute()
-        return [row["customer_phone"] for row in res.data]
+
+        return [row["customers"]["phone"] for row in res.data if row.get("customers")]
     except Exception as e:
-        print(f"❌ Erreur lors de la récupération des conversations en mode humain : {e}")
+        logger.error(f"❌ Erreur lors de la récupération des conversations en mode humain : {e}")
         return []
 
 
 # ==========================================
-# DASHBOARD (LECTURE SEULE — Phase 4)
+# DASHBOARD (LECTURE SEULE)
 # ==========================================
 
-def get_cart_funnel_stats(phone_number_id):
-    """Compte les paniers par statut, pour visualiser le funnel de relance
-    (pending → reminder_1_sent → reminder_2_sent → expired → completed)."""
+def get_cart_funnel_stats(whatsapp_phone_number_id):
     empty = {"pending": 0, "reminder_1_sent": 0, "reminder_2_sent": 0, "expired": 0, "completed": 0}
     if not supabase_db:
         return empty
     try:
-        res = supabase_db.table("cart_tracking") \
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return empty
+
+        res = supabase_db.table("carts") \
             .select("status") \
-            .eq("phone_number_id", str(phone_number_id)) \
+            .eq("tenant_id", tenant_id) \
             .execute()
+
         counts = dict(empty)
         for row in res.data:
             status = row.get("status", "pending")
             counts[status] = counts.get(status, 0) + 1
         return counts
     except Exception as e:
-        print(f"❌ Erreur lors du calcul des statistiques de panier : {e}")
+        logger.error(f"❌ Erreur lors du calcul des statistiques de panier : {e}")
         return empty
 
 
-def get_recent_conversations(phone_number_id, limit=20):
-    """Liste les clients ayant écrit récemment, avec leur dernier message,
-    l'horodatage, et leur mode actuel (bot/human)."""
+def get_recent_conversations(whatsapp_phone_number_id, limit=20):
     if not supabase_db:
         return []
     try:
-        # On lit un peu plus large que `limit` messages pour pouvoir dédupliquer
-        # par client tout en gardant les `limit` conversations les plus récentes.
-        res = supabase_db.table("messages") \
-            .select("user_phone, role, content, created_at") \
-            .eq("phone_number_id", str(phone_number_id)) \
-            .order("created_at", desc=True) \
-            .limit(limit * 8) \
+        tenant_id = _get_tenant_id(whatsapp_phone_number_id)
+        if not tenant_id:
+            return []
+
+        res = supabase_db.table("conversations") \
+            .select("id, status, last_interaction_at, customers(phone)") \
+            .eq("tenant_id", tenant_id) \
+            .order("last_interaction_at", desc=True) \
+            .limit(limit) \
             .execute()
 
-        conversations = {}
-        for row in res.data:
-            phone = row["user_phone"]
-            if phone not in conversations:
-                conversations[phone] = {
-                    "customer_phone": phone,
-                    "last_message": row["content"],
-                    "last_role": row["role"],
-                    "last_at": row["created_at"],
-                }
-            if len(conversations) >= limit:
-                break
+        result = []
+        for conv in res.data:
+            customer_phone = conv.get("customers", {}).get("phone")
+            if not customer_phone:
+                continue
 
-        human_set = set(get_human_mode_conversations(phone_number_id))
-        result = list(conversations.values())
-        for c in result:
-            c["mode"] = "human" if c["customer_phone"] in human_set else "bot"
+            msg_res = supabase_db.table("messages") \
+                .select("content, sender_type, created_at") \
+                .eq("conversation_id", conv["id"]) \
+                .order("created_at", desc=True) \
+                .limit(1) \
+                .execute()
+
+            last_msg = msg_res.data[0] if msg_res.data else {}
+
+            result.append({
+                "customer_phone": customer_phone,
+                "last_message": last_msg.get("content", ""),
+                "last_role": "user" if last_msg.get("sender_type") == "user" else "assistant",
+                "last_at": conv.get("last_interaction_at"),
+                "mode": "human" if conv.get("status") == "handover" else "bot"
+            })
+
         return result
     except Exception as e:
-        print(f"❌ Erreur lors de la récupération des conversations récentes : {e}")
+        logger.error(f"❌ Erreur lors de la récupération des conversations récentes : {e}")
         return []
