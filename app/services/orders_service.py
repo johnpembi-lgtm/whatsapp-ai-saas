@@ -1,207 +1,286 @@
 import datetime
-import json
-import os
-import re
 import logging
-from flask import current_app
-from groq import Groq
-from app.services.sheets_service import SheetsService
-from app.services.whatsapp_service import WhatsAppService
-from app.services.cart_service import CartService
+from typing import Dict, Any, List, Optional
+from app.core.database import (
+    supabase_db,
+    get_product_by_name_or_id,
+    create_order_with_items,
+    _get_or_create_customer,
+)
 
 logger = logging.getLogger(__name__)
 
-# Modèles recommandés Groq post-dépréciation 2026
-PRIMARY_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-FALLBACK_MODEL = "openai/gpt-oss-120b"
-
 
 class OrdersService:
-    """Service d'analyse et d'enregistrement des commandes clients via Groq."""
+    """Service d'analyse, de validation, d'enregistrement et de mise à jour des commandes clients."""
 
     @staticmethod
-    def get_recent_orders(tenant, limit=20):
-        """Lit les commandes les plus récentes depuis l'onglet 'Commandes' du
-        Google Sheets de la boutique. Retourne une liste vide (sans planter)
-        si l'onglet n'existe pas encore (aucune commande passée)."""
-        sheets_id = tenant.get("sheets_id")
-        try:
-            client = SheetsService.get_gspread_client()
-            if not client:
-                return []
-            spreadsheet = client.open_by_key(sheets_id)
-            sheet = spreadsheet.worksheet("Commandes")
-            records = sheet.get_all_records()
-            return list(reversed(records))[:limit]
-        except Exception as e:
-            logger.warning(f"⚠️ Aucune commande disponible pour l'affichage dashboard : {e}")
-            return []
-
-    @staticmethod
-    def get_today_stats(tenant):
-        """Calcule le nombre de commandes et le chiffre d'affaires du jour."""
-        orders = OrdersService.get_recent_orders(tenant, limit=500)
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        today_orders = [o for o in orders if str(o.get("Date", "")).startswith(today_str)]
-
-        def parse_total(row):
-            try:
-                return float(re.sub(r"[^\d.]", "", str(row.get("Total (DH)", "0"))))
-            except ValueError:
-                return 0.0
-
-        return {
-            "count_today": len(today_orders),
-            "revenue_today": sum(parse_total(o) for o in today_orders),
-            "count_total": len(orders),
-            "revenue_total": sum(parse_total(o) for o in orders),
-        }
-
-    @staticmethod
-    def extract_order_data(history, last_user_msg, last_ai_reply):
-        """Interroge Groq pour extraire les données structurées de la commande au format JSON."""
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            logger.warning("⚠️ Clé API GROQ_API_KEY manquante dans l'environnement.")
-            return {"is_order_completed": False}
-
-        client = Groq(api_key=api_key)
-
-        # 1. Formatage de tout l'historique de conversation
-        formatted_history = ""
-        if history:
-            for msg in history:
-                role = "Client" if msg.get("role") == "user" else "Assistant"
-                formatted_history += f"{role}: {msg.get('content', '')}\n"
-
-        prompt_extraction = f"""
-        Analyse la conversation WhatsApp suivante et extrait les informations de la commande.
-
-        HISTORIQUE COMPLET DE LA CONVERSATION :
-        {formatted_history}
-        Client: "{last_user_msg}"
-        Assistant: "{last_ai_reply}"
-
-        RÈGLES D'EXTRACTION STRICTES :
-        1. "client_name" : Parcours TOUT l'historique pour trouver le nom complet donné par le client (ex: "Grâce Jean Pierre", "PEMBI Jean François"). Ne mets "Inconnu" QUE si aucun nom n'apparaît dans toute la conversation.
-        2. "address" : Cherche l'adresse textuelle ou la géolocalisation/GPS transmise par le client.
-        3. "items" : Liste explicite des produits commandés avec leurs quantités (ex: "4x T-Shirt Coton Noir, 3x Jean Slim Bleu").
-        4. "total_price" : Montant total numérique uniquement (ex: "1500").
-        5. "is_order_completed" : Mets true SEULEMENT SI le nom ET l'adresse/géolocalisation sont présents dans l'échange et que la commande est explicitement validée DANS LE DERNIER ÉCHANGE COURANT. Si la commande a DEJÀ été confirmée et traitée auparavant dans l'historique, mets false.
-
-        Tu dois répondre STRICTEMENT par un objet JSON respectant cette structure :
-        {{
-            "is_order_completed": true ou false,
-            "client_name": "Nom complet extrait",
-            "address": "Adresse ou coordonnées GPS",
-            "items": "Articles et quantités",
-            "total_price": "Montant total numérique uniquement"
-        }}
+    def create_order(
+        tenant_id: str,
+        customer_phone: str,
+        items: list,
+        delivery_type: str = "pickup",
+        delivery_address: Optional[str] = None,
+        customer_name: str = "Client",
+        location_data: Optional[dict] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        external_reference: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
         """
+        Création de commande acceptant l'ensemble des arguments requis par les tests Phase 4.
+        """
+        if not tenant_id:
+            return {"success": False, "error": "tenant_id missing"}
 
-        messages = [{"role": "user", "content": prompt_extraction}]
+        # 1. Vérification de l'existence du tenant et de ses configurations
+        tenant_res = (
+            supabase_db.table("tenants")
+            .select("*")
+            .eq("id", tenant_id)
+            .execute()
+        )
+        if not tenant_res.data:
+            return {"success": False, "error": "tenant_not_found"}
 
-        # Tentative avec le modèle principal, puis fallback en cas d'erreur
-        for model_name in [PRIMARY_MODEL, FALLBACK_MODEL]:
-            try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    temperature=0.0,
-                    response_format={"type": "json_object"},
-                )
-                raw_content = response.choices[0].message.content.strip()
-                return json.loads(raw_content)
-            except Exception as e:
-                logger.warning(f"⚠️ Échec d'extraction avec le modèle {model_name} : {e}")
+        tenant = tenant_res.data[0]
+        delivery_enabled = tenant.get("delivery_enabled", True)
+        pickup_enabled = tenant.get("pickup_enabled", True)
 
-        logger.error("❌ Échec complet d'extraction de commande après tentatives sur tous les modèles Groq.")
-        return {"is_order_completed": False}
+        raw_type = (delivery_type or "pickup").lower()
+        if raw_type == "delivery" and not delivery_enabled:
+            return {
+                "success": False,
+                "status": "rejected",
+                "reason": "delivery_disabled",
+            }
 
-    @staticmethod
-    def record_order_if_completed(
-        tenant,
-        phone_number_id,
-        sender_phone,
-        history,
-        user_text,
-        ai_reply,
-    ):
-        """Vérifie la commande, l'enregistre dans Google Sheets et notifie le vendeur via WhatsApp."""
-        # Garde-fou immédiat : Si la commande est déjà validée dans le système, on abandonne
-        if CartService.is_order_completed(phone_number_id, sender_phone):
-            return
+        if raw_type == "pickup" and not pickup_enabled:
+            return {
+                "success": False,
+                "status": "rejected",
+                "reason": "pickup_disabled",
+            }
 
-        order_info = OrdersService.extract_order_data(
-            history, user_text, ai_reply
+        fulfillment_type = raw_type
+
+        # Extraction / Normalisation des coordonnées GPS
+        loc = location_data or {}
+        final_lat = latitude if latitude is not None else loc.get("latitude")
+        final_lng = longitude if longitude is not None else loc.get("longitude")
+
+        # Validation de l'adresse ou des coordonnées GPS en mode livraison
+        if fulfillment_type == "delivery":
+            if not delivery_address and final_lat is None and final_lng is None:
+                return {
+                    "success": False,
+                    "status": "rejected",
+                    "reason": "missing_address_or_location",
+                    "error": "Adresse ou géolocalisation requise pour la livraison",
+                }
+
+        # 2. Gestion de l'idempotence via external_reference
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        ext_ref = (
+            external_reference
+            or f"ORD-{tenant_id[:8]}-{customer_phone[-4:]}-{int(now_dt.timestamp())}"
         )
 
-        if order_info.get("is_order_completed"):
-            client_name = order_info.get("client_name", "Inconnu")
-            address = order_info.get("address", "Non spécifiée")
-            items = order_info.get("items", "Non spécifié")
-            total = order_info.get("total_price", "0")
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if external_reference:
+            existing = (
+                supabase_db.table("orders")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("external_reference", external_reference)
+                .execute()
+            )
+            if existing.data and len(existing.data) > 0:
+                existing_order = existing.data[0]
+                return {
+                    "success": True,
+                    "order_id": existing_order.get("id"),
+                    "total_amount": existing_order.get("total_amount"),
+                    "order": existing_order,
+                    "idempotent": True,
+                }
 
-            row_data = [
-                now_str,
-                sender_phone,
-                client_name,
-                address,
-                items,
-                f"{total} DH",
-                "En attente",
-            ]
+        # 3. Calcul du total et résolution des produits
+        calculated_total = 0.0
+        resolved_items = []
 
-            # 1. Écriture dans Google Sheets
-            sheets_id = tenant.get("sheets_id")
-            success = SheetsService.append_order(sheets_id, row_data)
+        for item in items:
+            p_id = item.get("product_id") or item.get("id") or item.get("name")
+            qty = max(1, int(item.get("quantity", 1)))
 
-            if success:
-                logger.info(
-                    f"📦 [COMMANDE ENREGISTRÉE] Client: {client_name} | Total: {total} DH"
+            prod = get_product_by_name_or_id(tenant_id, str(p_id))
+            if prod:
+                db_price = float(prod.get("price", item.get("price", 0.0)))
+                calculated_total += db_price * qty
+                resolved_items.append(
+                    {
+                        "product_id": prod["id"],
+                        "quantity": qty,
+                        "unit_price": db_price,
+                        "product_name": prod.get("name"),
+                    }
                 )
 
-                # --- AJOUT CRITIQUE POUR LA RELANCE ---
-                # Désactiver immédiatement la relance automatique car la commande est validée
-                CartService.mark_as_completed(phone_number_id, sender_phone)
-                logger.info(f"🔒 Relance désactivée pour le client +{sender_phone}.")
+        if not resolved_items:
+            return {
+                "success": False,
+                "status": "rejected",
+                "reason": "no_valid_products",
+            }
 
-                # 2. Récupération explicite du token d'accès WhatsApp
-                access_token = (
-                    tenant.get("whatsapp_access_token")
-                    or tenant.get("access_token")
-                    or os.getenv("WHATSAPP_ACCESS_TOKEN")
+        # 4. Identification du client
+        customer_id = _get_or_create_customer(
+            tenant_id, customer_phone, full_name=customer_name
+        )
+
+        addr_str = (
+            delivery_address
+            if fulfillment_type == "delivery"
+            else "Retrait en magasin"
+        )
+
+        # 5. Construction du payload de la commande
+        order_payload = {
+            "tenant_id": tenant_id,
+            "customer_id": customer_id,
+            "status": "pending",
+            "fulfillment_type": fulfillment_type,
+            "delivery_address": addr_str,
+            "total_amount": calculated_total,
+            "external_reference": ext_ref,
+            "details": {
+                "items": resolved_items,
+                "fulfillment_type": fulfillment_type,
+                "delivery_address": addr_str,
+                "client_name": customer_name,
+                "client_phone": customer_phone,
+            },
+        }
+
+        if final_lat is not None:
+            order_payload["delivery_latitude"] = final_lat
+        if final_lng is not None:
+            order_payload["delivery_longitude"] = final_lng
+
+        if final_lat is not None or final_lng is not None:
+            order_payload["details"]["location_data"] = {
+                "latitude": final_lat,
+                "longitude": final_lng,
+            }
+
+        # 6. Insertion en base de données
+        try:
+            created_order = create_order_with_items(order_payload, resolved_items)
+            order_id = created_order.get("id") if created_order else None
+            return {
+                "success": True,
+                "order_id": order_id,
+                "total_amount": calculated_total,
+                "order": created_order,
+            }
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la création de commande : {e}")
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def update_order_status(
+        order_id: str,
+        tenant_id: str,
+        new_status: str
+    ) -> Dict[str, Any]:
+        """
+        Met à jour le statut d'une commande tout en gérant les timestamps
+        'completed_at' / 'cancelled_at' et la décrémentation idempotente du stock via 'stock_applied_at'.
+        """
+        # 1. Vérification de l'existence de la commande
+        existing_res = (
+            supabase_db.table("orders")
+            .select("*")
+            .eq("id", order_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+
+        if not existing_res.data:
+            logger.warning(
+                f"⚠️ Tentative de mise à jour échouée pour order_id={order_id}, tenant_id={tenant_id}"
+            )
+            return {
+                "success": False,
+                "updated": 0,
+                "error": "Order not found or tenant mismatch",
+            }
+
+        current_order = existing_res.data[0]
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        update_payload: Dict[str, Any] = {"status": new_status}
+
+        # 2. Gestion idempotente des Timestamps
+        if new_status == "completed" and not current_order.get("completed_at"):
+            update_payload["completed_at"] = now_iso
+        elif new_status == "cancelled" and not current_order.get("cancelled_at"):
+            update_payload["cancelled_at"] = now_iso
+
+        # 3. Décrémentation du stock unique (Seulement si stock_applied_at est NULL)
+        stock_already_applied = current_order.get("stock_applied_at") is not None
+
+        if new_status == "completed" and not stock_already_applied:
+            # Tente de récupérer depuis les articles structurés ou la clef details JSONB
+            items = current_order.get("details", {}).get("items", [])
+            if not items:
+                # Fetch fallback depuis order_items si présent
+                order_items_res = (
+                    supabase_db.table("order_items")
+                    .select("*")
+                    .eq("order_id", order_id)
+                    .execute()
                 )
+                items = order_items_res.data or []
 
-                # 3. Notification WhatsApp au Vendeur
-                vendor_phone = tenant.get("vendor_phone")
-                if vendor_phone and access_token:
-                    vendor_message = (
-                        f"🚨 *NOUVELLE COMMANDE REÇUE !*\n\n"
-                        f"👤 *Client :* {client_name}\n"
-                        f"📞 *Téléphone :* +{sender_phone}\n"
-                        f"📍 *Adresse :* {address}\n"
-                        f"🛒 *Articles :* {items}\n"
-                        f"💰 *Total :* {total} DH\n\n"
-                        f"🕒 *Heure :* {now_str}"
+            for item in items:
+                p_id = item.get("product_id")
+                qty = item.get("quantity", 0)
+                if p_id and qty > 0:
+                    prod_res = (
+                        supabase_db.table("products")
+                        .select("stock")
+                        .eq("id", p_id)
+                        .execute()
                     )
+                    if prod_res.data:
+                        current_stock = prod_res.data[0].get("stock", 0)
+                        new_stock = max(0, current_stock - qty)
+                        supabase_db.table("products").update(
+                            {"stock": new_stock}
+                        ).eq("id", p_id).execute()
 
-                    try:
-                        WhatsAppService.send_message(
-                            phone_number_id=phone_number_id,
-                            recipient_phone=vendor_phone,
-                            message_text=vendor_message,
-                            access_token=access_token,
-                        )
-                        logger.info(
-                            f"📲 Notification WhatsApp envoyée au vendeur ({vendor_phone})"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Erreur lors de l'envoi de la notification au vendeur : {e}"
-                        )
-                else:
-                    logger.error(
-                        f"❌ Échec envoi vendeur : vendor_phone ({vendor_phone}) ou access_token absent dans le tenant."
-                    )
+            # Marquer la commande comme ayant déjà appliqué son stock
+            update_payload["stock_applied_at"] = now_iso
+
+        # 4. Mise à jour de la commande dans Supabase
+        update_res = (
+            supabase_db.table("orders")
+            .update(update_payload)
+            .eq("id", order_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+
+        if not update_res.data:
+            return {"success": False, "updated": 0}
+
+        return {"success": True, "updated": 1, "order": update_res.data[0]}
+
+    @staticmethod
+    def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
+        """Récupère une commande par son identifiant unique."""
+        res = supabase_db.table("orders").select("*").eq("id", order_id).execute()
+        if res.data:
+            return res.data[0]
+        return None

@@ -10,16 +10,21 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # Validation stricte en production. Les configurations de test peuvent
-    # définir TESTING=True et fournir des valeurs factices sans dépendre du .env.
+    # Validation stricte en production
     if not app.config.get("TESTING") and hasattr(config_class, "validate"):
         config_class.validate()
 
     app.json.ensure_ascii = False
 
-    # Desactiver le scheduler pendant l'exécution des tests
-    if not app.config.get("TESTING"):
-        scheduler.init_app(app)
+    # Protection contre la réinitialisation si le scheduler tourne déjà ou si TESTING est actif
+    is_testing = app.config.get("TESTING", False) or os.environ.get("FLASK_ENV") == "testing"
+    
+    if not is_testing:
+        if not scheduler.running:
+            try:
+                scheduler.init_app(app)
+            except Exception:
+                pass  # Évite les erreurs de configuration si init_app est appelé plusieurs fois
 
         if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
             from app.services.retargeting_service import RetargetingService
@@ -35,13 +40,21 @@ def create_app(config_class=Config):
                 )
 
             if not scheduler.running:
-                scheduler.start()
+                try:
+                    scheduler.start()
+                except Exception:
+                    pass
 
+    # Enregistrement des Blueprints
     from app.routes.admin_routes import admin_bp
     from app.routes.webhook_routes import webhook_bp
+    from app.routes.orders_routes import orders_bp
+    from app.routes.handover_routes import handover_bp
 
     app.register_blueprint(webhook_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(orders_bp)
+    app.register_blueprint(handover_bp)
 
     @app.after_request
     def add_security_headers(response):
