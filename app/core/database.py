@@ -76,7 +76,7 @@ def _get_tenant_id(whatsapp_phone_number_id: str) -> str:
             .select("id") \
             .eq("whatsapp_phone_number_id", clean_phone_id) \
             .execute()
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             return res.data[0]["id"]
     except Exception as e:
         logger.error(f"❌ Erreur lors de la récupération du tenant_id : {e}")
@@ -103,11 +103,8 @@ def _get_or_create_customer(tenant_id: str, phone: str, full_name: str = None) -
             on_conflict="tenant_id,phone"
         ).execute()
 
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             customer = res.data[0]
-            # Met à jour le nom si un full_name spécifique est fourni ultérieurement
-            if full_name and customer.get("full_name") != full_name:
-                supabase_db.table("customers").update({"full_name": full_name}).eq("id", customer["id"]).execute()
             return customer["id"]
     except Exception as e:
         logger.error(f"❌ Erreur lors de la résolution/création du customer_id : {e}")
@@ -128,7 +125,7 @@ def _get_or_create_conversation(tenant_id: str, customer_id: str) -> str:
             on_conflict="tenant_id,customer_id"
         ).execute()
         
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             return res.data[0]["id"]
     except Exception as e:
         logger.error(f"❌ Erreur lors de la résolution de la conversation : {e}")
@@ -197,6 +194,9 @@ def get_conversation_history(whatsapp_phone_number_id, user_phone, limit=6):
             .limit(limit) \
             .execute()
 
+        if not res or not hasattr(res, "data") or not res.data:
+            return []
+
         history = [
             {
                 "role": "user" if row["sender_type"] == "user" else "assistant",
@@ -226,7 +226,7 @@ def get_or_create_cart(tenant_id: str, customer_id: str) -> dict:
             .eq("customer_id", customer_id) \
             .eq("status", "pending") \
             .execute()
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             return res.data[0]
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -236,7 +236,7 @@ def get_or_create_cart(tenant_id: str, customer_id: str) -> dict:
             "status": "pending",
             "last_interaction": now_iso
         }).execute()
-        if ins.data:
+        if ins and hasattr(ins, "data") and ins.data:
             return ins.data[0]
     except Exception as e:
         logger.error(f"❌ Erreur lors de la récupération/création du panier : {e}")
@@ -252,7 +252,7 @@ def get_cart_items(cart_id: str) -> list:
             .select("*, products(*)") \
             .eq("cart_id", cart_id) \
             .execute()
-        return res.data or []
+        return res.data if res and hasattr(res, "data") and res.data else []
     except Exception as e:
         logger.error(f"❌ Erreur de lecture des cart_items : {e}")
         return []
@@ -330,6 +330,9 @@ def get_pending_carts_for_retry(limit=10):
             .limit(limit) \
             .execute()
 
+        if not res or not hasattr(res, "data") or not res.data:
+            return []
+
         pending_carts = []
         for row in res.data:
             pending_carts.append({
@@ -358,15 +361,38 @@ def get_product_by_name_or_id(tenant_id: str, identifier: str) -> dict:
         return None
     try:
         res = supabase_db.table("products").select("*").eq("tenant_id", tenant_id).eq("id", str(identifier)).execute()
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             return res.data[0]
 
         res = supabase_db.table("products").select("*").eq("tenant_id", tenant_id).ilike("name", f"%{identifier}%").execute()
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             return res.data[0]
     except Exception as e:
         logger.error(f"❌ Erreur lors de la recherche du produit : {e}")
     return None
+
+
+def get_order_by_external_reference(external_reference: str, tenant_id: str) -> dict | None:
+    """
+    Récupère une commande par sa référence externe en maintenant l'isolation multi-tenant.
+    Garantit l'idempotence au sein d'un même tenant sans fuite d'informations entre tenants.
+    """
+    if not supabase_db or not external_reference or not tenant_id:
+        return None
+    try:
+        query = (
+            supabase_db.table("orders")
+            .select("*")
+            .eq("external_reference", external_reference)
+            .eq("tenant_id", tenant_id)
+        )
+        res = query.execute()
+        if res and hasattr(res, "data") and isinstance(res.data, list) and len(res.data) > 0:
+            return res.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la récupération de la commande par référence externe : {e}")
+        return None
 
 
 def create_order_with_items(order_data: dict, items: list) -> dict:
@@ -385,20 +411,20 @@ def create_order_with_items(order_data: dict, items: list) -> dict:
         # 1. Vérification des fonctionnalités activées pour le Tenant
         if tenant_id:
             tenant_res = supabase_db.table("tenants").select("delivery_enabled, pickup_enabled").eq("id", tenant_id).execute()
-            if tenant_res.data:
+            if tenant_res and hasattr(tenant_res, "data") and tenant_res.data:
                 tenant_settings = tenant_res.data[0]
                 if delivery_type == "delivery" and tenant_settings.get("delivery_enabled") is False:
                     return {"success": False, "error": "Livraison désactivée pour ce tenant"}
                 if delivery_type == "pickup" and tenant_settings.get("pickup_enabled") is False:
                     return {"success": False, "error": "Retrait en magasin désactivé pour ce tenant"}
 
-        # 2. Gestion de l'idempotence via external_reference
+        # 2. Gestion de l'idempotence via external_reference (Isolé par tenant_id)
         ext_ref = order_data.get("external_reference")
         if ext_ref:
-            existing = supabase_db.table("orders").select("*").eq("external_reference", ext_ref).execute()
-            if existing.data:
-                logger.info(f"ℹ️ Commande {ext_ref} déjà existante (Idempotence respectée).")
-                res_obj = existing.data[0]
+            existing = get_order_by_external_reference(ext_ref, tenant_id)
+            if existing:
+                logger.info(f"ℹ️ Commande {ext_ref} déjà existante pour le tenant {tenant_id} (Idempotence respectée).")
+                res_obj = dict(existing)
                 res_obj["success"] = True
                 return res_obj
 
@@ -413,7 +439,7 @@ def create_order_with_items(order_data: dict, items: list) -> dict:
 
             # Récupération du prix canonique en DB
             prod_res = supabase_db.table("products").select("price").eq("id", prod_id).execute()
-            if prod_res.data and prod_res.data[0].get("price") is not None:
+            if prod_res and hasattr(prod_res, "data") and prod_res.data and prod_res.data[0].get("price") is not None:
                 real_price = float(prod_res.data[0]["price"])
             else:
                 real_price = float(item.get("price") or item.get("unit_price") or 0.0)
@@ -446,7 +472,7 @@ def create_order_with_items(order_data: dict, items: list) -> dict:
 
         # 5. Insertion dans la table 'orders'
         res = supabase_db.table("orders").insert(order_payload).execute()
-        if not res.data:
+        if not res or not hasattr(res, "data") or not res.data:
             return {"success": False, "error": "Échec d'insertion de la commande"}
 
         order = res.data[0]
@@ -481,60 +507,80 @@ def get_orders_by_tenant(tenant_id: str, status: str = None, limit: int = 50) ->
             query = query.eq("status", status)
 
         response = query.order("created_at", desc=True).limit(limit).execute()
-        return response.data or []
+        return response.data if response and hasattr(response, "data") and response.data else []
     except Exception as e:
         logger.error(f"❌ Erreur lors de la récupération des commandes Supabase : {e}")
         return []
 
 
-def update_order_status_atomic(order_id: str, new_status: str, tenant_id: str = None) -> dict:
+def update_order_status_atomic(order_id: str, tenant_id: str, new_status: str) -> dict:
     """
-    Met à jour le statut d'une commande via RPC si 'completed', sinon via mise à jour directe.
+    Met à jour le statut d'une commande de manière atomique avec isolation multi-tenant.
+    Transmet systématiquement le tenant_id à la fonction RPC ou à la requête directe.
     """
-    if not supabase_db or not order_id:
-        return {"success": False, "message": "Base de données indisponible", "order": None}
+    if not supabase_db or not order_id or not tenant_id:
+        return {"success": False, "message": "Base de données indisponible ou paramètres invalides", "order": None}
 
     try:
         if new_status == "completed":
-            rpc_res = supabase_db.rpc("complete_order_and_decrement_stock", {"p_order_id": order_id}).execute()
-            if rpc_res.data and rpc_res.data.get("success"):
-                updated_order = supabase_db.table("orders").select("*").eq("id", order_id).execute()
+            # Transmission explicite de p_tenant_id pour parer aux failles BOLA au niveau du RPC
+            rpc_res = supabase_db.rpc(
+                "complete_order_and_decrement_stock", 
+                {
+                    "p_order_id": order_id,
+                    "p_tenant_id": tenant_id
+                }
+            ).execute()
+
+            if rpc_res and hasattr(rpc_res, "data") and rpc_res.data and rpc_res.data.get("success"):
+                updated_order = (
+                    supabase_db.table("orders")
+                    .select("*")
+                    .eq("id", order_id)
+                    .eq("tenant_id", tenant_id)
+                    .execute()
+                )
                 return {
                     "success": True, 
                     "message": rpc_res.data.get("message"),
-                    "order": updated_order.data[0] if updated_order.data else None
+                    "order": updated_order.data[0] if updated_order and hasattr(updated_order, "data") and updated_order.data else None
                 }
             else:
-                err_msg = rpc_res.data.get("message") if rpc_res.data else "Erreur RPC"
+                err_msg = rpc_res.data.get("message") if rpc_res and hasattr(rpc_res, "data") and rpc_res.data else "Commande introuvable ou non autorisée"
                 return {"success": False, "message": err_msg, "order": None}
         else:
-            updated_order = update_order_status(order_id, new_status, tenant_id=tenant_id)
+            # Appel positionnel strict pour éviter l'erreur de signature de fonction
+            updated_order = update_order_status(order_id, new_status, tenant_id)
             if updated_order:
                 return {
                     "success": True, 
                     "message": f"Statut mis à jour vers '{new_status}'",
                     "order": updated_order
                 }
-            return {"success": False, "message": "Échec de la mise à jour du statut", "order": None}
+            return {"success": False, "message": "Commande introuvable ou non autorisée", "order": None}
     except Exception as e:
         logger.error(f"❌ Erreur lors de la mise à jour atomique du statut de la commande {order_id} : {e}")
         return {"success": False, "message": str(e), "order": None}
 
 
-def update_order_status(order_id: str, new_status: str, tenant_id: str = None) -> dict:
+def update_order_status(order_id: str, new_status: str, tenant_id: str) -> dict:
     """
-    Met à jour le statut d'une commande, applique l'isolation multi-tenant (si tenant_id est fourni),
+    Met à jour le statut d'une commande en imposing le contrôle par tenant_id,
     et renseigne les horodatages de complétion ou d'annulation.
     """
-    if not supabase_db or not order_id:
+    if not supabase_db or not order_id or not tenant_id:
         return None
     try:
-        query = supabase_db.table("orders").select("*").eq("id", order_id)
-        if tenant_id:
-            query = query.eq("tenant_id", tenant_id)
-        curr = query.execute()
+        # Vérification préalable sous condition d'appartenance au tenant
+        curr = (
+            supabase_db.table("orders")
+            .select("*")
+            .eq("id", order_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
 
-        if not curr.data:
+        if not curr or not hasattr(curr, "data") or not curr.data:
             return None
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -545,12 +591,14 @@ def update_order_status(order_id: str, new_status: str, tenant_id: str = None) -
         elif new_status == "cancelled":
             update_payload["cancelled_at"] = now_iso
 
-        update_query = supabase_db.table("orders").update(update_payload).eq("id", order_id)
-        if tenant_id:
-            update_query = update_query.eq("tenant_id", tenant_id)
-
-        res = update_query.execute()
-        return res.data[0] if res.data else None
+        res = (
+            supabase_db.table("orders")
+            .update(update_payload)
+            .eq("id", order_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        return res.data[0] if res and hasattr(res, "data") and res.data else None
     except Exception as e:
         logger.error(f"❌ Erreur lors du changement de statut de commande : {e}")
         return None
@@ -577,7 +625,7 @@ def get_conversation_mode(whatsapp_phone_number_id, customer_phone):
             .eq("customer_id", customer_id) \
             .execute()
 
-        if res.data:
+        if res and hasattr(res, "data") and res.data:
             return "human" if res.data[0]["status"] == "handover" else "bot"
         return "bot"
     except Exception as e:
@@ -627,6 +675,9 @@ def get_human_mode_conversations(whatsapp_phone_number_id):
             .eq("status", "handover") \
             .execute()
 
+        if not res or not hasattr(res, "data") or not res.data:
+            return []
+
         return [row["customers"]["phone"] for row in res.data if row.get("customers")]
     except Exception as e:
         logger.error(f"❌ Erreur lors de la récupération des conversations en mode humain : {e}")
@@ -650,6 +701,9 @@ def get_cart_funnel_stats(whatsapp_phone_number_id):
             .select("status") \
             .eq("tenant_id", tenant_id) \
             .execute()
+
+        if not res or not hasattr(res, "data") or not res.data:
+            return empty
 
         counts = dict(empty)
         for row in res.data:
@@ -677,6 +731,9 @@ def get_recent_conversations(whatsapp_phone_number_id, limit=20):
             .order("created_at", foreign_table="messages", desc=True) \
             .limit(limit) \
             .execute()
+
+        if not res or not hasattr(res, "data") or not res.data:
+            return []
 
         result = []
         for conv in res.data:

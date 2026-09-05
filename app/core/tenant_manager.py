@@ -1,22 +1,9 @@
-import os
 import time
 import logging
-from dotenv import load_dotenv
-from supabase import create_client, Client
-
-load_dotenv()
+from typing import Optional, Dict, Any
+from app.core import database
 
 logger = logging.getLogger(__name__)
-
-raw_url = os.getenv("SUPABASE_URL", "")
-SUPABASE_URL = raw_url.split("/rest/v1")[0].rstrip("/")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-supabase: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-else:
-    logger.warning("⚠️ Supabase non configuré dans tenant_manager.py")
 
 
 class TenantManager:
@@ -25,6 +12,11 @@ class TenantManager:
     # Cache mémoire : { whatsapp_phone_number_id: (timestamp, tenant_dict) }
     _tenant_cache = {}
     _TENANT_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+    @classmethod
+    def _get_db(cls):
+        """Récupère dynamiquement l'instance Supabase pour garantir l'interception par le mock."""
+        return database.supabase_db
 
     @classmethod
     def invalidate_cache(cls, whatsapp_phone_number_id: str = None):
@@ -38,20 +30,23 @@ class TenantManager:
             logger.info("🔄 Tout le cache des tenants a été vidé.")
 
     @classmethod
-    def get_tenants(cls):
+    def get_tenants(cls) -> Dict[str, Any]:
         """Récupère toutes les boutiques indexées par whatsapp_phone_number_id."""
-        if not supabase:
+        db = cls._get_db()
+        if not db:
             return {}
+
         try:
-            res = supabase.table("tenants").select("*").execute()
+            res = db.table("tenants").select("*").execute()
             tenants = {}
-            for row in res.data:
-                # Injection de clés d'alias pour la compatibilité avec le reste du projet
+            for row in res.data or []:
+                # Injection de clés d'alias pour la compatibilité
                 row["tenant_id"] = row.get("id")
-                row["store_id"] = row.get("name") or row.get("store_id")
+                row["store_name"] = row.get("name") or row.get("store_name") or row.get("store_id")
+                row["store_id"] = row["store_name"]
                 row["sheets_id"] = row.get("google_sheet_id") or row.get("sheets_id")
 
-                phone_id = row.get("whatsapp_phone_number_id")
+                phone_id = row.get("whatsapp_phone_number_id") or row.get("phone_number_id")
                 if phone_id:
                     tenants[phone_id] = row
             return tenants
@@ -60,28 +55,38 @@ class TenantManager:
             return {}
 
     @classmethod
-    def get_tenant_by_phone_id(cls, whatsapp_phone_number_id: str):
-        """Récupère une boutique par son WhatsApp Phone Number ID Meta (avec cache mémoire TTL 5min)."""
-        if not supabase or not whatsapp_phone_number_id:
+    def get_tenant_by_phone_id(cls, whatsapp_phone_number_id: str) -> Optional[Dict[str, Any]]:
+        """Récupère une boutique par son WhatsApp Phone Number ID (avec cache mémoire TTL 5min)."""
+        db = cls._get_db()
+        if not db or not whatsapp_phone_number_id:
             return None
 
         clean_phone_id = str(whatsapp_phone_number_id).strip()
 
-        # 1. Vérification du cache mémoire
+        # 1. Cache hit
         cached = cls._tenant_cache.get(clean_phone_id)
         if cached:
             timestamp, tenant_data = cached
             if (time.time() - timestamp) < cls._TENANT_CACHE_TTL_SECONDS:
                 return tenant_data
 
-        # 2. Requête Supabase si absente du cache ou expirée
+        # 2. Requête Supabase
         try:
             res = (
-                supabase.table("tenants")
+                db.table("tenants")
                 .select("*")
                 .eq("whatsapp_phone_number_id", clean_phone_id)
                 .execute()
             )
+
+            # Repli si la colonne s'appelle 'phone_number_id'
+            if not res.data:
+                res = (
+                    db.table("tenants")
+                    .select("*")
+                    .eq("phone_number_id", clean_phone_id)
+                    .execute()
+                )
 
             if not res.data:
                 logger.warning(f"❌ Aucune boutique configurée pour l'ID WhatsApp : {clean_phone_id}")
@@ -89,15 +94,16 @@ class TenantManager:
 
             tenant = res.data[0]
 
-            # Vérification de l'état actif
+            # Vérification état actif
             is_active = tenant.get("status") == "active" if "status" in tenant else tenant.get("is_active", True)
             if not is_active:
                 logger.warning(f"⚠️ La boutique [{tenant.get('name') or tenant.get('store_name')}] est désactivée.")
                 return None
 
-            # Injection des clés alias pour la compatibilité du reste de l'application
+            # Normalisation des alias
             tenant["tenant_id"] = tenant.get("id")
-            tenant["store_id"] = tenant.get("name") or tenant.get("store_id")
+            tenant["store_name"] = tenant.get("name") or tenant.get("store_name") or tenant.get("store_id")
+            tenant["store_id"] = tenant["store_name"]
             tenant["sheets_id"] = tenant.get("google_sheet_id") or tenant.get("sheets_id")
 
             # 3. Mise en cache
@@ -124,14 +130,12 @@ class TenantManager:
         vendor_email: str = None,
         ai_config: dict = None,
         **kwargs,
-    ):
-        """Ajoute ou met à jour une boutique dans Supabase et invalide son cache.
-        Accepte les alias de paramètres pour rétrocompatibilité (phone_number_id/whatsapp_phone_number_id, store_id/name, sheets_id/google_sheet_id).
-        """
-        if not supabase:
+    ) -> bool:
+        """Ajoute ou met à jour une boutique dans Supabase et invalide le cache."""
+        db = cls._get_db()
+        if not db:
             return False
 
-        # Résolution flexible des arguments
         final_phone_id = (phone_number_id or whatsapp_phone_number_id or "").strip()
         final_name = (store_id or name or "").strip()
         final_sheet_id = (sheets_id or google_sheet_id or "").strip()
@@ -174,12 +178,11 @@ class TenantManager:
 
         try:
             res = (
-                supabase.table("tenants")
+                db.table("tenants")
                 .upsert(payload, on_conflict="whatsapp_phone_number_id")
                 .execute()
             )
             if res.data:
-                # Invalidation automatique du cache après mise à jour
                 cls.invalidate_cache(final_phone_id)
                 return True
             return False

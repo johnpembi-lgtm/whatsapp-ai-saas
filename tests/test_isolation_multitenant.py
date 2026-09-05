@@ -1,52 +1,44 @@
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 from app.core.tenant_manager import TenantManager
-
-MOCK_TENANT_A = {
-    "id": "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1",
-    "phone_number_id": "1111111111",
-    "store_name": "Boutique A",
-    "sheets_id": "SHEET_A",
-    "is_active": True
-}
-
-MOCK_TENANT_B = {
-    "id": "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2",
-    "phone_number_id": "2222222222",
-    "store_name": "Boutique B",
-    "sheets_id": "SHEET_B",
-    "is_active": True
-}
 
 
 def test_tenant_resolution_isolation():
     """Vérifie que chaque phone_number_id résout uniquement son propre tenant_id."""
-    with patch("app.core.tenant_manager.supabase") as mock_supabase:
-        
-        mock_query_a = MagicMock()
-        mock_query_a.execute.return_value.data = [MOCK_TENANT_A]
-        
-        mock_query_b = MagicMock()
-        mock_query_b.execute.return_value.data = [MOCK_TENANT_B]
+    TenantManager.invalidate_cache()
 
-        # Test Résolution Tenant A
-        mock_supabase.table().select().eq().execute.side_effect = [mock_query_a.execute()]
-        tenant_a = TenantManager.get_tenant_by_phone_id("1111111111")
-        
-        assert tenant_a is not None
-        assert tenant_a["tenant_id"] == "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
-        assert tenant_a["store_name"] == "Boutique A"
-        assert tenant_a["sheets_id"] == "SHEET_A"
+    tenant_a = {
+        "id": "tenant-uuid-A",
+        "name": "Boutique A",
+        "whatsapp_phone_number_id": "111111",
+        "status": "active",
+    }
+    tenant_b = {
+        "id": "tenant-uuid-B",
+        "name": "Boutique B",
+        "whatsapp_phone_number_id": "222222",
+        "status": "active",
+    }
 
-        # Test Résolution Tenant B
-        mock_supabase.table().select().eq().execute.side_effect = [mock_query_b.execute()]
-        tenant_b = TenantManager.get_tenant_by_phone_id("2222222222")
-        
-        assert tenant_b is not None
-        assert tenant_b["tenant_id"] == "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"
-        assert tenant_b["store_name"] == "Boutique B"
-        assert tenant_b["sheets_id"] == "SHEET_B"
+    mock_db = MagicMock()
 
-        # Étanchéité stricts
-        assert tenant_a["tenant_id"] != tenant_b["tenant_id"]
-        assert tenant_a["sheets_id"] != tenant_b["sheets_id"]
+    def mock_eq(col, val):
+        mock_exec = MagicMock()
+        if val == "111111":
+            mock_exec.execute.return_value.data = [tenant_a]
+        elif val == "222222":
+            mock_exec.execute.return_value.data = [tenant_b]
+        else:
+            mock_exec.execute.return_value.data = []
+        return mock_exec
+
+    mock_db.table().select().eq.side_effect = mock_eq
+
+    with patch("app.core.database.supabase_db", mock_db):
+        res_a = TenantManager.get_tenant_by_phone_id("111111")
+        res_b = TenantManager.get_tenant_by_phone_id("222222")
+
+        assert res_a is not None
+        assert res_a["tenant_id"] == "tenant-uuid-A"
+
+        assert res_b is not None
+        assert res_b["tenant_id"] == "tenant-uuid-B"

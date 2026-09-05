@@ -1,6 +1,6 @@
 """
 Routes API pour la gestion des commandes depuis le Dashboard Vendeur.
- Permet la consultation, le filtrage et le passage de statut (avec MAJ de stock atomique).
+Permet la consultation, le filtrage et le passage de statut (avec MAJ de stock atomique).
 """
 import logging
 from flask import Blueprint, jsonify, request, session
@@ -19,7 +19,7 @@ def list_orders():
 
     tenant_id = database._get_tenant_id(phone_number_id)
     if not tenant_id:
-        return jsonify({"error": "Tenant introuvable"}), 440
+        return jsonify({"error": "Tenant introuvable"}), 404
 
     status_filter = request.args.get("status")
     limit = int(request.args.get("limit", 50))
@@ -30,20 +30,45 @@ def list_orders():
 
 @orders_bp.route("/<order_id>/status", methods=["PATCH"])
 def update_order_status(order_id):
-    """Met à jour le statut d'une commande (ex: passer en 'completed' ou 'cancelled')."""
+    """Met à jour le statut d'une commande du tenant courant."""
+
     phone_number_id = session.get("phone_number_id")
+
     if not phone_number_id:
         return jsonify({"error": "Non autorisé"}), 401
+
+    tenant_id = database._get_tenant_id(phone_number_id)
+
+    if not tenant_id:
+        return jsonify({"error": "Tenant introuvable"}), 404
 
     data = request.get_json() or {}
     new_status = data.get("status")
 
-    valid_statuses = ["pending", "processing", "completed", "cancelled"]
-    if not new_status or new_status not in valid_statuses:
-        return jsonify({"error": f"Statut invalide. Statuts autorisés : {valid_statuses}"}), 400
+    valid_statuses = [
+        "pending",
+        "processing",
+        "completed",
+        "cancelled",
+    ]
 
-    res = database.update_order_status_atomic(order_id, new_status)
+    if not new_status or new_status not in valid_statuses:
+        return jsonify({
+            "error": f"Statut invalide. Statuts autorisés : {valid_statuses}"
+        }), 400
+
+    res = database.update_order_status_atomic(
+        order_id,
+        new_status,
+        tenant_id=tenant_id,
+    )
+
     if res.get("success"):
-        return jsonify({"success": True, "message": res.get("message")}), 200
-    else:
-        return jsonify({"error": res.get("message")}), 400
+        return jsonify({
+            "success": True,
+            "message": res.get("message"),
+        }), 200
+
+    return jsonify({
+        "error": res.get("message")
+    }), 400
